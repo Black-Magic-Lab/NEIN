@@ -959,6 +959,10 @@ static BOOL NEINDuoInstallTabProxy(UITabBarController *tabs) {
     if (content) [proxy.view insertSubview:splitView aboveSubview:content];
     else [proxy.view insertSubview:splitView atIndex:MIN((NSUInteger)1, proxy.view.subviews.count)];
     [split didMoveToParentViewController:proxy];
+    // Moved mid-appearance, the split would never get viewDidAppear, and chat
+    // rooms would keep scrolling to the bottom.
+    [split beginAppearanceTransition:YES animated:NO];
+    [split endAppearanceTransition];
     return YES;
 }
 
