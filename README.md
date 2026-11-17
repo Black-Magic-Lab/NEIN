@@ -25,8 +25,6 @@ macOS 版請看 [README-macOS.md](README-macOS.md)。
      output/NEIN-26.17.0.ipa
    ```
 
-   使用 iPhone Duo 的話，再加上 `--iphone-duo`。
-
 3. 用自己的憑證完整重簽後安裝，例如 [AltStore](https://altstore.io/) 或 [Sideloadly](https://sideloadly.io/)。重簽時請保留 Bundle ID `kinta.ma.nein`。
 
 裝好的 App 叫 `NEIN`，可以和原版 LINE 並存。NEIN 收不到推播，建議保留原版 LINE 接收通知，平常用 NEIN。
@@ -41,7 +39,6 @@ macOS 版請看 [README-macOS.md](README-macOS.md)。
 | `--remove-ads` | 停用廣告載入、隱藏廣告，並封鎖廣告網域（清單見 [`ad_domains.txt`](ad_domains.txt)）。 |
 | `--collapse-friends-on-launch` | 首頁的好友區塊預設收合，仍可手動展開。 |
 | `--skin-theme` | 把白色主題替換成指定的主題：格式 `TARGET_UUID=SOURCE_UUID`，套用中與系統退回預設的兩種狀態都渲染指定主題的外觀。 |
-| `--iphone-duo` | 實驗性支援 iPhone Duo。 |
 | `--primary-login` | 保留主手機的登入流程，不偽裝成 iPad。 |
 
 貼圖商店與主題小舖預設開啟，不用加參數：貼圖可以用在原版 LINE 儲值的代幣購買（26.17.0 已實測），主題小舖已實測可開啟瀏覽、免費主題能下載並套用（付費主題購買未測），兩者在 NEIN 內都無法儲值。若某個 IPA 推不出已稽核的小舖 patch，建置會自動略過並記在 manifest 的 `shops_skipped`。
@@ -59,7 +56,7 @@ macOS 版請看 [README-macOS.md](README-macOS.md)。
 - 不包含原版的分享、Widget、Siri 與 Apple Watch 擴充功能。
 - NEIN 不接收 LINE 連結，連結會由原版 LINE 開啟。
 - `--remove-ads` 可能讓 LINE News、推薦內容或廣告影片無法載入。
-- `--iphone-duo` 的版本裝在其他 iOS 27 iPhone 上，也會有些微版面差異（例如預設邊距變為 0）。
+- iPhone Duo 支援（實驗性）現在起變成預設內建，如在其他手機有版面問題請回報。
 - 請先備份 LINE 資料，再於測試裝置安裝。
 
 ## 致謝 🙏

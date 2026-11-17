@@ -366,17 +366,17 @@ def parse_args(argv=None):
                         help='Initialize the Friends section as collapsed')
     parser.add_argument('--skin-theme', metavar='TARGET_UUID=SOURCE_UUID',
                         help='Give the target owned theme (e.g. the white theme) the look of the source theme, both while applied and after the system reverts to the default')
-    parser.add_argument('--iphone-duo', action='store_true',
-                        help="Experimentally mark the app as built with the iOS 27.1 SDK so iPhone Duo uses the full inner display, the system vertical bar and LINE's two-column layout; promotional tabs are removed from the tab bar controller")
     parser.add_argument('--allow-unverified', action='store_true',
                         help='Allow a different executable hash for a known version/build; still checks the original ARM64 instruction')
     args = parser.parse_args(argv)
+    # iPhone Duo support (the iOS 27.1 SDK mark, the vertical bar and LINE's
+    # two-column layout) comes with every dylib; only --entry-only has none.
+    args.iphone_duo = not args.entry_only
     if args.keychain_compat:
         args.diagnostics = True
     if args.skin_theme and not args.entry_only:
         # One-flag skin mode: the seeded target is a theme the account
         # really owns, so imply only the resign-tested defaults.
-        # --iphone-duo stays opt-in (device-specific).
         args.keychain_compat = True
         args.diagnostics = True
         args.remove_ads = True
@@ -385,8 +385,6 @@ def parse_args(argv=None):
         parser.error('--entry-only cannot be combined with diagnostics, compatibility hooks, or ad removal.')
     if args.entry_only and args.primary_login:
         parser.error('--entry-only cannot be combined with --primary-login.')
-    if args.entry_only and args.iphone_duo:
-        parser.error('--entry-only cannot be combined with --iphone-duo.')
     if args.entry_only and args.skin_theme:
         parser.error('--entry-only cannot be combined with --skin-theme.')
     if args.skin_theme:

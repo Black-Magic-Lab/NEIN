@@ -496,11 +496,13 @@ class MainToolTests(unittest.TestCase):
 
     def test_options_are_opt_in(self):
         for flag in ('--remove-ads', '--primary-login',
-                     '--collapse-friends-on-launch', '--iphone-duo'):
+                     '--collapse-friends-on-launch'):
             attribute = flag[2:].replace('-', '_')
             with self.subTest(flag=flag):
                 self.assertFalse(getattr(self.args(), attribute))
                 self.assertTrue(getattr(self.args(flag), attribute))
+        self.assertTrue(self.args().iphone_duo)
+        self.assertFalse(self.args('--entry-only').iphone_duo)
         args = self.args('--keychain-compat')
         self.assertTrue(args.keychain_compat)
         self.assertTrue(args.diagnostics)
@@ -510,7 +512,6 @@ class MainToolTests(unittest.TestCase):
             ('--entry-only', '--primary-login'),
             ('--entry-only', '--remove-ads'),
             ('--entry-only', '--keychain-compat'),
-            ('--entry-only', '--iphone-duo'),
             ('--entry-only', '--skin-theme',
              'dffa6443-27c7-4361-a481-39750b03b5c5=3cc08ba6-5d04-4c52-ab76-651231ead8ef'),
         ):
@@ -582,49 +583,38 @@ class MainToolTests(unittest.TestCase):
         profile = self.profile(original, patch_offset=0x400, patch_va=0x100000400,
                                instruction='tbz w0, #0, 0x100000408')
         self.write_ipa(original, info)
-        for flags in ((), ('--iphone-duo',)):
-            iphone_duo = bool(flags)
-            with self.subTest(flags=flags):
-                args = self.args(*flags, output=f'output-{len(flags)}.ipa')
-                build = mock.Mock(return_value=(None, b'dylib'))
-                manifest = self.run_main(
-                    args, profile, build_compat_dylib=build,
-                    extract_icon_previews=mock.Mock(return_value={}),
-                )
-                self.assertEqual(build.call_args.args[0].iphone_duo, iphone_duo)
+        args = self.args()
+        build = mock.Mock(return_value=(None, b'dylib'))
+        manifest = self.run_main(
+            args, profile, build_compat_dylib=build,
+            extract_icon_previews=mock.Mock(return_value={}),
+        )
+        self.assertTrue(build.call_args.args[0].iphone_duo)
 
-                expected, _ = main.macho.add_dylib(
-                    main.patched_binary(original, profile), main.LOAD_PATH)
-                if iphone_duo:
-                    expected, _ = main.patch_build_version_sdk(expected)
-                with zipfile.ZipFile(args.output) as archive:
-                    executable = archive.read(main.EXECUTABLE)
-                    output_info = plistlib.loads(archive.read(main.PLIST))
-                self.assertEqual(executable, expected)
-                self.assertEqual(
-                    struct.unpack_from('<I', executable, 0xc8)[0],
-                    0x1B0100 if iphone_duo else 0x1A0500,
-                )
-                self.assertEqual(struct.unpack_from('<I', executable, 0xc4)[0], 0x120000)
-                self.assertEqual(output_info['DTSDKName'],
-                                 'iphoneos27.1' if iphone_duo else 'iphoneos26.5')
-                if not iphone_duo:
-                    self.assertIsNone(manifest['iphone_duo'])
-                    continue
-                section = manifest['iphone_duo']
-                self.assertEqual(section['build_version'], {
-                    'sdk_field_offset': '0xc8', 'minimum_os': '18.0.0',
-                    'original_sdk': '26.5.0', 'patched_sdk': '27.1.0',
-                })
-                self.assertEqual(section['info_plist'], {
-                    'DTSDKName': {'original': 'iphoneos26.5', 'patched': 'iphoneos27.1'},
-                    'DTPlatformVersion': {'original': '26.5', 'patched': '27.1'},
-                })
-                self.assertEqual(section['split_layout']['device_model'], 'iPhone19,4')
-                self.assertIn('line://nv/settings', section['home_settings_hook'])
-                self.assertIn('setViewControllers:animated:', section['tab_removal_hook'])
-                self.assertEqual(section['split_layout']['minimum_window_short_side_points'], 600)
-                self.assertIn('LineCameraSubsystem.CameraView', section['camera_layout_hook'])
+        expected, _ = main.macho.add_dylib(
+            main.patched_binary(original, profile), main.LOAD_PATH)
+        expected, _ = main.patch_build_version_sdk(expected)
+        with zipfile.ZipFile(args.output) as archive:
+            executable = archive.read(main.EXECUTABLE)
+            output_info = plistlib.loads(archive.read(main.PLIST))
+        self.assertEqual(executable, expected)
+        self.assertEqual(struct.unpack_from('<I', executable, 0xc8)[0], 0x1B0100)
+        self.assertEqual(struct.unpack_from('<I', executable, 0xc4)[0], 0x120000)
+        self.assertEqual(output_info['DTSDKName'], 'iphoneos27.1')
+        section = manifest['iphone_duo']
+        self.assertEqual(section['build_version'], {
+            'sdk_field_offset': '0xc8', 'minimum_os': '18.0.0',
+            'original_sdk': '26.5.0', 'patched_sdk': '27.1.0',
+        })
+        self.assertEqual(section['info_plist'], {
+            'DTSDKName': {'original': 'iphoneos26.5', 'patched': 'iphoneos27.1'},
+            'DTPlatformVersion': {'original': '26.5', 'patched': '27.1'},
+        })
+        self.assertEqual(section['split_layout']['device_model'], 'iPhone19,4')
+        self.assertIn('line://nv/settings', section['home_settings_hook'])
+        self.assertIn('setViewControllers:animated:', section['tab_removal_hook'])
+        self.assertEqual(section['split_layout']['minimum_window_short_side_points'], 600)
+        self.assertIn('LineCameraSubsystem.CameraView', section['camera_layout_hook'])
 
     def test_skin_default_json_prefixes_only_shipped_images(self):
         source_id = '00000000-0000-0000-0000-000000000002'
