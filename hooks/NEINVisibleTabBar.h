@@ -1,9 +1,16 @@
+// The includer supplies NEINOpenLineSettings and NEINPresentationTabAppearance,
+// so tests can swap in view doubles for UIKit.
+#pragma once
+
+#import <objc/runtime.h>
 #include "NEINVisibleTabModel.h"
 #include "NEINHomeTapSequence.h"
 
+// iPhone Duo gets a settings gear on Home instead of a Settings tab.
+static BOOL NEINVisibleTabAddsSettings = YES;
+
 static BOOL NEINIsSettingsTabItem(UITabBarItem *item) {
-    return NEINTabTitleIsOneOf(item.title,
-        @[@"SETTINGS", @"設定", @"设置", @"設置", @"설정"]);
+    return NEINIsSettingsTabTitle(item.title);
 }
 
 #ifdef NEIN_MULTI_SKIN_THEME
@@ -56,8 +63,8 @@ static UIImage *NEINSkinTabImage(UITabBarItem *item, BOOL selected, UITraitColle
 
     NSString *role = nil;
     if (NEINIsHomeTabTitle(item.title)) role = @"home";
-    else if (NEINTabTitleIsOneOf(item.title, @[@"CHAT", @"CHATS", @"聊天", @"トーク", @"채팅"])) role = @"chat";
-    else if (NEINTabTitleIsOneOf(item.title, @[@"CALL", @"CALLS", @"通話", @"통화"])) role = @"call";
+    else if (NEINIsChatTabTitle(item.title)) role = @"chat";
+    else if (NEINIsCallTabTitle(item.title)) role = @"call";
     else if (NEINIsSettingsTabItem(item)) role = @"setting";
     if (!role) return nil;
 
@@ -161,16 +168,8 @@ static char NEINVisibleTabSourceOwnerKey;
     return self;
 }
 
-- (NSString *)settingsTabPresentationTitle {
-    NSString *language = NSBundle.mainBundle.preferredLocalizations.firstObject.lowercaseString;
-    if ([language hasPrefix:@"en"]) return @"Settings";
-    if ([language hasPrefix:@"zh-hans"]) return @"设置";
-    if ([language hasPrefix:@"ko"]) return @"설정";
-    return @"設定";
-}
-
 - (UITabBarItem *)newSettingsItem {
-    NSString *title = [self settingsTabPresentationTitle];
+    NSString *title = NEINLineSettingsTitle();
     UITabBarItem *item = [[UITabBarItem alloc] initWithTitle:title
         image:[UIImage systemImageNamed:@"gearshape"]
         selectedImage:[UIImage systemImageNamed:@"gearshape.fill"]];
@@ -272,9 +271,10 @@ static char NEINVisibleTabSourceOwnerKey;
                 break;
             }
         }
+        BOOL addSettings = !hasNativeSettings && NEINVisibleTabAddsSettings;
         BOOL rebuild = ![self matchesCurrentModel] || ![indices isEqualToArray:self.indices] ||
-                       self.bar.items.count != indices.count + !hasNativeSettings ||
-                       (self.bar.items.lastObject == self.settingsItem) != !hasNativeSettings;
+                       self.bar.items.count != indices.count + addSettings ||
+                       (self.bar.items.lastObject == self.settingsItem) != addSettings;
         self.sourceItems = items;
         self.sourceControllers = controllers;
         self.indices = indices;
@@ -288,7 +288,7 @@ static char NEINVisibleTabSourceOwnerKey;
                     image:[self imageForSourceItem:item selected:NO]
                     selectedImage:[self imageForSourceItem:item selected:YES]]];
             }
-            if (!hasNativeSettings) [copies addObject:self.settingsItem];
+            if (addSettings) [copies addObject:self.settingsItem];
             [self.bar setItems:copies animated:NO];
         }
         for (NSUInteger i = 0; i < indices.count; i++) {

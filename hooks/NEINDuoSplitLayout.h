@@ -35,20 +35,29 @@ static CGSize NEINDuoCanvasSize(UIViewController *controller) {
 }
 
 static void NEINDuoUpdateSplitTraits(UISplitViewController *controller, CGSize canvas) {
-    BOOL wide = MIN(canvas.width, canvas.height) >= NEINDuoSplitMinimumCanvasSide;
-    BOOL applied = objc_getAssociatedObject(controller, &NEINDuoSplitOverrideKey) != nil;
-    if (wide == applied) return;
+    UIUserInterfaceSizeClass sizeClass = UIUserInterfaceSizeClassUnspecified;
+    if (MIN(canvas.width, canvas.height) >= NEINDuoSplitMinimumCanvasSide) {
+        // Upright, the unfolded window is regular itself, but too narrow for
+        // the detail column beside the 320pt list, so it keeps one column
+        // like other apps there.
+        sizeClass = canvas.width >= canvas.height ? UIUserInterfaceSizeClassRegular
+                                                  : UIUserInterfaceSizeClassCompact;
+    }
+    NSNumber *applied = objc_getAssociatedObject(controller, &NEINDuoSplitOverrideKey);
+    if (sizeClass == (applied ? applied.integerValue : UIUserInterfaceSizeClassUnspecified)) return;
     // The child's own override wins over LINE's compact parent override.
     // UIKit does not re-query that parent override on fold because the
     // window's size class never changes, so update the child directly.
-    if (wide) {
-        controller.traitOverrides.horizontalSizeClass = UIUserInterfaceSizeClassRegular;
+    if (sizeClass != UIUserInterfaceSizeClassUnspecified) {
+        controller.traitOverrides.horizontalSizeClass = sizeClass;
     } else {
         [controller.traitOverrides removeTrait:UITraitHorizontalSizeClass.class];
     }
-    objc_setAssociatedObject(controller, &NEINDuoSplitOverrideKey, wide ? @YES : nil,
+    objc_setAssociatedObject(controller, &NEINDuoSplitOverrideKey,
+                             sizeClass != UIUserInterfaceSizeClassUnspecified ? @(sizeClass) : nil,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
+
 
 static void NEINDuoSplitDidLayoutSubviews(id self, SEL selector) {
     NEINDuoOriginalSplitLayout(self, selector);

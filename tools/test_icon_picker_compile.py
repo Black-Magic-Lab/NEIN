@@ -11,8 +11,7 @@ import main
 ROOT = Path(__file__).resolve().parents[1]
 HOOKS = ROOT / 'hooks' / 'NEINHooks.m'
 FULL_COMBO = (
-    'KEYCHAIN_COMPAT', 'DIAGNOSTICS', 'REMOVE_ADS', 'HIDE_PROMOTIONAL_TABS',
-    'IPHONE_DUO', 'ICON_PICKER',
+    'KEYCHAIN_COMPAT', 'DIAGNOSTICS', 'REMOVE_ADS', 'IPHONE_DUO', 'ICON_PICKER',
 )
 
 
@@ -54,10 +53,8 @@ class IconPickerCompileTests(unittest.TestCase):
             ('DIAGNOSTICS',),
             ('KEYCHAIN_COMPAT', 'DIAGNOSTICS'),
             ('REMOVE_ADS',),
-            ('HIDE_PROMOTIONAL_TABS',),
-            ('REMOVE_ADS', 'HIDE_PROMOTIONAL_TABS'),
             ('IPHONE_DUO',),
-            ('IPHONE_DUO', 'HIDE_PROMOTIONAL_TABS', 'ICON_PICKER'),
+            ('IPHONE_DUO', 'ICON_PICKER'),
             FULL_COMBO,
         ):
             with self.subTest(macros=macros):

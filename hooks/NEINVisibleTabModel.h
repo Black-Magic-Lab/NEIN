@@ -1,22 +1,12 @@
+#pragma once
 // Keep model indices intact. Only the separate presentation bar is filtered.
-static BOOL NEINTabTitleIsOneOf(NSString *title, NSArray<NSString *> *knownTitles) {
-    NSString *normalized = [[title stringByTrimmingCharactersInSet:
-                             NSCharacterSet.whitespaceAndNewlineCharacterSet] uppercaseString];
-    return [knownTitles containsObject:normalized ?: @""];
-}
+#include "NEINLineStrings.h"
 
 static BOOL NEINIsPromotionalTabItem(UITabBarItem *item) {
-    // 逛逛/Discover is the LINE 26.17.0 TW commerce tab ("tw.commerce.gnb").
     // LINE 26.14.0 includes this specific item class. Do not match generic
     // TabBar/TabItem names or infer item identity from view positions.
-    return NEINTabTitleIsOneOf(item.title, @[@"VOOM", @"LINE VOOM", @"NEWS", @"LINE NEWS",
-                                             @"SHOPPING", @"LINE SHOPPING", @"逛逛", @"DISCOVER"]) ||
+    return NEINIsPromotionalTabTitle(item.title) ||
            [NSStringFromClass(item.class) hasSuffix:@"VOOMSkinnedTabBarItem"];
-}
-
-static BOOL NEINIsHomeTabTitle(NSString *title) {
-    return NEINTabTitleIsOneOf(title,
-        @[@"HOME", @"首頁", @"主頁", @"主页", @"ホーム", @"홈"]);
 }
 
 static BOOL NEINIsMainLineTabBar(NSArray<UITabBarItem *> *items) {
@@ -24,10 +14,8 @@ static BOOL NEINIsMainLineTabBar(NSArray<UITabBarItem *> *items) {
     for (UITabBarItem *item in items) {
         NSString *title = item.title;
         hasHome |= NEINIsHomeTabTitle(title);
-        hasChat |= NEINTabTitleIsOneOf(title,
-            @[@"CHAT", @"CHATS", @"聊天", @"トーク", @"채팅"]);
-        hasCalls |= NEINTabTitleIsOneOf(title,
-            @[@"CALL", @"CALLS", @"通話", @"통화"]);
+        hasChat |= NEINIsChatTabTitle(title);
+        hasCalls |= NEINIsCallTabTitle(title);
     }
     return hasHome && hasChat && hasCalls;
 }

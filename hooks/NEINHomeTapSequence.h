@@ -1,3 +1,4 @@
+#pragma once
 #include <math.h>
 
 static BOOL NEINRecordHomeTap(NSMutableArray<NSNumber *> *times, NSTimeInterval now,

@@ -2,6 +2,7 @@ import struct
 import unittest
 
 import mac_main
+import macho
 
 
 class MacMainTests(unittest.TestCase):
@@ -17,10 +18,12 @@ class MacMainTests(unittest.TestCase):
 
     def test_injects_thin_slice_without_changing_size(self):
         source = self.make_slice()
-        patched = mac_main.add_dylib_to_slice(source)
+        patched = mac_main.add_dylib_to_universal(source)
         self.assertEqual(len(source), len(patched))
         self.assertEqual(struct.unpack_from('<I', patched, 16)[0], 2)
         self.assertIn(mac_main.HOOK_LOAD_PATH.encode(), patched)
+        with self.assertRaisesRegex(ValueError, 'already referenced'):
+            macho.add_dylib(patched, mac_main.HOOK_LOAD_PATH)
 
     def test_injects_each_universal_slice(self):
         first = self.make_slice()

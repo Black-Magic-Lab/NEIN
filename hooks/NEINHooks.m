@@ -18,9 +18,7 @@
 #ifdef NEIN_MULTI_KEYCHAIN_COMPAT
 #include "NEINKeychainHooks.m"
 #endif
-#if defined(NEIN_MULTI_REMOVE_ADS) || defined(NEIN_MULTI_HIDE_PROMOTIONAL_TABS)
 #include "NEINAdRemovalHooks.m"
-#endif
 #ifdef NEIN_MULTI_REMOVE_ADS
 #include "NEINAdNetworkHooks.m"
 #endif
@@ -111,9 +109,7 @@ __attribute__((constructor)) static void NEINHooksLoad(void) {
 #ifdef NEIN_MULTI_KEYCHAIN_COMPAT
             NEINInstallKeychainCompat();
 #endif
-#if defined(NEIN_MULTI_REMOVE_ADS) || defined(NEIN_MULTI_HIDE_PROMOTIONAL_TABS)
             NEINInstallAdRemovalCompat();
-#endif
 #ifdef NEIN_MULTI_REMOVE_ADS
             NEINInstallAdNetworkBlock();
 #endif

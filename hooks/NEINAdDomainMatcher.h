@@ -1,3 +1,4 @@
+#pragma once
 #import <Foundation/Foundation.h>
 
 static BOOL NEINNormalizedAdHostMatchesDomain(NSString *normalizedHost, NSString *domain) {

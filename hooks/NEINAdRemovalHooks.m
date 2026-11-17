@@ -1,5 +1,6 @@
 // Disable known advertising loaders and remove their views without touching
-// chat content or ordinary LINE network requests.
+// chat content or ordinary LINE network requests. Promotional tabs are always
+// hidden; only the ad hooks depend on NEIN_MULTI_REMOVE_ADS.
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #include "NEINObjCRuntime.h"
@@ -174,21 +175,7 @@ static void NEINInstallAdvertisingCleanupHook(void) {
 }
 #endif
 
-#ifdef NEIN_MULTI_HIDE_PROMOTIONAL_TABS
-static void NEINOpenLineSettings(UITabBarController *controller) {
-    // Route inside this app. UIApplication.openURL could launch the original LINE.
-    if (!controller.viewIfLoaded.window || controller.presentedViewController) return;
-    id<UIApplicationDelegate> delegate = UIApplication.sharedApplication.delegate;
-    SEL selector = @selector(application:openURL:options:);
-    NSURL *url = [NSURL URLWithString:@"line://nv/settings"];
-    if ([delegate respondsToSelector:selector] &&
-        [delegate application:UIApplication.sharedApplication openURL:url options:@{}]) return;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"NEIN"
-        message:@"目前無法透過內部路由開啟設定，請稍後再試。"
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
-    [controller presentViewController:alert animated:YES completion:nil];
-}
+#include "NEINLineSettings.h"
 
 // LINE's tab icons are pre-colored bitmaps, so its appearance leaves template
 // icons such as the gear on the default blue tint. Match the selected title.
@@ -205,6 +192,10 @@ static UITabBarAppearance *NEINPresentationTabAppearance(UITabBarAppearance *sou
 }
 
 #include "NEINVisibleTabBar.h"
+#ifdef NEIN_MULTI_IPHONE_DUO
+#include "NEINDuoSplitLayout.h"
+#include "NEINDuoTabRemoval.h"
+#endif
 
 static NEINVoidNoArgIMP NEINOriginalTabBarLayout;
 static NEINVoidNoArgIMP NEINOriginalSourceTabBarLayout;
@@ -292,6 +283,14 @@ static void NEINSetVisibleSelectedController(id self, SEL selector, UIViewContro
 }
 
 static void NEINInstallPromotionalTabHooks(void) {
+#ifdef NEIN_MULTI_IPHONE_DUO
+    if ([NEINDuoMachineModel() isEqualToString:NEINDuoModelIdentifier]) {
+        NEINVisibleTabAddsSettings = NO;
+        // The system vertical bar ignores the presentation bar; remove the tabs
+        // from the controller instead.
+        if (NEINInstallDuoTabRemoval()) return;
+    }
+#endif
     NEINHookOwnMethod(UITabBar.class, @selector(setAlpha:), "v", 3, @encode(CGFloat), NULL,
                     (IMP)NEINSourceTabSetAlpha, (IMP *)&NEINOriginalTabAlpha);
     NEINHookOwnMethod(UITabBar.class, @selector(setHidden:), "v", 3, @encode(BOOL), NULL,
@@ -321,7 +320,6 @@ static void NEINInstallPromotionalTabHooks(void) {
                     "v", 2, NULL, NULL, (IMP)NEINSourceTabBarLayout,
                     (IMP *)&NEINOriginalSourceTabBarLayout);
 }
-#endif
 
 static void NEINInstallAdRemovalCompat(void) {
     static dispatch_once_t once;
@@ -330,8 +328,6 @@ static void NEINInstallAdRemovalCompat(void) {
         NEINInstallAdvertisingLoaderHooks();
         NEINInstallAdvertisingCleanupHook();
 #endif
-#ifdef NEIN_MULTI_HIDE_PROMOTIONAL_TABS
         NEINInstallPromotionalTabHooks();
-#endif
     });
 }

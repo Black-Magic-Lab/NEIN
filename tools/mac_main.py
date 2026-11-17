@@ -2,7 +2,6 @@
 """Build an experimental ad-blocking copy of the installed LINE macOS app."""
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import plistlib
@@ -10,6 +9,9 @@ import shutil
 import struct
 import subprocess
 import tempfile
+
+import macho
+import scan_ad_domains
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,74 +23,8 @@ HOOK_SOURCE = ROOT / 'hooks' / 'NEINMacHooks.mm'
 HOOK_NAME = 'NEINMacHooks.dylib'
 HOOK_RELATIVE = Path('Contents/Frameworks') / HOOK_NAME
 HOOK_LOAD_PATH = '@executable_path/../Frameworks/' + HOOK_NAME
-BLOCKED_DOMAINS = (
-    'ad.line-scdn.net',
-    'admob-gmats.uc.r.appspot.com',
-    'doubleclick-cn.net',
-    'doubleclick.net',
-    'googleadservices.com',
-    'googlesyndication.com',
-    'imasdk.googleapis.com',
-    'taboola.com',
-    'taboolanews.com',
-)
-NOP = bytes.fromhex('1f2003d5')
-
-
-def sha256(path):
-    digest = hashlib.sha256()
-    with path.open('rb') as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def macho_header(data):
-    if len(data) < 32 or struct.unpack_from('<I', data, 0)[0] != 0xFEEDFACF:
-        raise ValueError('Expected a little-endian 64-bit Mach-O slice.')
-    command_count, command_size = struct.unpack_from('<II', data, 16)
-    return command_count, command_size
-
-
-def add_dylib_to_slice(data, load_path=HOOK_LOAD_PATH):
-    command_count, command_size = macho_header(data)
-    cursor = 32
-    first_section = len(data)
-    for _ in range(command_count):
-        if cursor + 8 > len(data):
-            raise ValueError('Truncated Mach-O load command.')
-        command, size = struct.unpack_from('<II', data, cursor)
-        if size < 8 or size % 8 or cursor + size > 32 + command_size:
-            raise ValueError('Invalid Mach-O load-command layout.')
-        if command in (0xC, 0x80000018, 0x8000001F):
-            relative = struct.unpack_from('<I', data, cursor + 8)[0]
-            raw_name = data[cursor + relative:cursor + size].split(b'\0')[0]
-            if raw_name == load_path.encode():
-                raise ValueError('Hook dylib is already referenced.')
-        if command == 0x19:  # LC_SEGMENT_64
-            sections = struct.unpack_from('<I', data, cursor + 64)[0]
-            for index in range(sections):
-                section = cursor + 72 + index * 80
-                offset = struct.unpack_from('<I', data, section + 48)[0]
-                if offset:
-                    first_section = min(first_section, offset)
-        cursor += size
-    if cursor != 32 + command_size:
-        raise ValueError('Mach-O load-command size mismatch.')
-
-    raw = load_path.encode() + b'\0'
-    size = (24 + len(raw) + 7) & ~7
-    command = struct.pack('<6I', 0xC, size, 24, 0, 0, 0) + raw
-    command += bytes(size - len(command))
-    if cursor + size > first_section or any(data[cursor:cursor + size]):
-        raise ValueError('No zero-filled Mach-O header padding for injection.')
-
-    result = bytearray(data)
-    struct.pack_into('<II', result, 16, command_count + 1, command_size + size)
-    result[cursor:cursor + size] = command
-    return bytes(result)
-
-
+# hooks/NEINMacHooks.mm blocks exactly this audited list.
+BLOCKED_DOMAINS = scan_ad_domains.AD_SUFFIXES
 def add_dylib_to_universal(data):
     magic = struct.unpack_from('>I', data, 0)[0]
     if magic == 0xCAFEBABE:
@@ -100,14 +36,15 @@ def add_dylib_to_universal(data):
         arch_size = 32
         arch_format = '>iiQQI'
     else:
-        return add_dylib_to_slice(data)
+        return macho.add_dylib(data, HOOK_LOAD_PATH)[0]
 
     result = bytearray(data)
     for index in range(count):
         offset = 8 + index * arch_size
         fields = struct.unpack_from(arch_format, data, offset)
         slice_offset, slice_size = fields[2], fields[3]
-        patched = add_dylib_to_slice(data[slice_offset:slice_offset + slice_size])
+        patched = macho.add_dylib(
+            data[slice_offset:slice_offset + slice_size], HOOK_LOAD_PATH)[0]
         if len(patched) != slice_size:
             raise ValueError('Injection would change a universal slice size.')
         result[slice_offset:slice_offset + slice_size] = patched
@@ -242,8 +179,8 @@ def main(argv=None):
         'version': info['CFBundleShortVersionString'],
         'build': info.get('CFBundleVersion'),
         'architectures': ['arm64', 'x86_64'],
-        'source_binary_sha256': sha256(binary),
-        'patched_binary_sha256': sha256(output_binary),
+        'source_binary_sha256': macho.sha256_file(binary),
+        'patched_binary_sha256': macho.sha256_file(output_binary),
         'hook': HOOK_NAME,
         'dns_blocking': False,
         'qt_ad_hiding': not args.disable_qt_ad_hiding,

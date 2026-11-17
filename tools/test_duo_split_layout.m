@@ -102,7 +102,7 @@ int main(void) {
         const CGSize maxLandscape = CGSizeMake(956, 440);
 
         assert(NEINTestWide(unfolded));
-        assert(NEINTestWide(CGSizeMake(669, 951)));
+        assert(!NEINTestWide(CGSizeMake(669, 951)));
         assert(NEINTestWide(CGSizeMake(600, 600)));
         assert(!NEINTestWide(folded));
         assert(!NEINTestWide(CGSizeMake(599.5, 900)));
@@ -168,6 +168,25 @@ int main(void) {
         [split viewDidLayoutSubviews];
         assert(overrides.removals == 4);
         assert(split.layoutCount == 11);
+
+        // Upright, the regular unfolded window is held to one column.
+        const CGSize upright = CGSizeMake(669, 951);
+        split.viewIfLoaded = NEINTestView(upright, upright);
+        [split viewDidLayoutSubviews];
+        assert(overrides.horizontalSizeClass == UIUserInterfaceSizeClassCompact);
+        assert(overrides.writes == 5);
+        [split viewDidLayoutSubviews];
+        assert(overrides.writes == 5);
+        split.viewIfLoaded = NEINTestView(unfolded, unfolded);
+        [split viewDidLayoutSubviews];
+        assert(overrides.horizontalSizeClass == UIUserInterfaceSizeClassRegular);
+        assert(overrides.writes == 6);
+        split.viewIfLoaded = NEINTestView(upright, upright);
+        [split viewDidLayoutSubviews];
+        split.viewIfLoaded = NEINTestView(folded, folded);
+        [split viewDidLayoutSubviews];
+        assert(overrides.horizontalSizeClass == UIUserInterfaceSizeClassUnspecified);
+        assert(overrides.writes == 7 && overrides.removals == 5);
 
         // Narrow layouts leave overrides that NEIN did not set alone.
         NEINFakeSplitViewController *other = [NEINFakeSplitViewController new];

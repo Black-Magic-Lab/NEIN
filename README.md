@@ -20,8 +20,7 @@ macOS 版請看 [README-macOS.md](README-macOS.md)。
 2. 執行（推薦組合，開啟所有日常功能）：
 
    ```sh
-   python3 tools/main.py --keychain-compat --remove-ads --hide-promotional-tabs \
-     --collapse-friends-on-launch \
+   python3 tools/main.py --keychain-compat --remove-ads --collapse-friends-on-launch \
      jp.naver.line_26.17.0.ipa \
      output/NEIN-26.17.0.ipa
    ```
@@ -40,10 +39,9 @@ macOS 版請看 [README-macOS.md](README-macOS.md)。
 |---|---|
 | `--keychain-compat` | 處理重簽後部分 Keychain 存取失敗的問題，建議開啟。 |
 | `--remove-ads` | 停用廣告載入、隱藏廣告，並封鎖廣告網域（清單見 [`ad_domains.txt`](ad_domains.txt)）。 |
-| `--hide-promotional-tabs` | 隱藏 VOOM、新聞、購物與「逛逛」分頁，並在分頁列加上「設定」。也可以在 5 秒內連點「主頁」10 次開啟設定。 |
 | `--collapse-friends-on-launch` | 首頁的好友區塊預設收合，仍可手動展開。 |
 | `--skin-theme` | 把白色主題替換成指定的主題：格式 `TARGET_UUID=SOURCE_UUID`，套用中與系統退回預設的兩種狀態都渲染指定主題的外觀。 |
-| `--iphone-duo` | 實驗性支援 iPhone Duo：填滿內外螢幕，展開時改用 iPad 版的左右雙欄版面（已實機測試）。 |
+| `--iphone-duo` | 實驗性支援 iPhone Duo。 |
 | `--primary-login` | 保留主手機的登入流程，不偽裝成 iPad。 |
 
 貼圖商店與主題小舖預設開啟，不用加參數：貼圖可以用在原版 LINE 儲值的代幣購買（26.17.0 已實測），主題小舖已實測可開啟瀏覽、免費主題能下載並套用（付費主題購買未測），兩者在 NEIN 內都無法儲值。若某個 IPA 推不出已稽核的小舖 patch，建置會自動略過並記在 manifest 的 `shops_skipped`。
@@ -63,6 +61,10 @@ macOS 版請看 [README-macOS.md](README-macOS.md)。
 - `--remove-ads` 可能讓 LINE News、推薦內容或廣告影片無法載入。
 - `--iphone-duo` 的版本裝在其他 iOS 27 iPhone 上，也會有些微版面差異（例如預設邊距變為 0）。
 - 請先備份 LINE 資料，再於測試裝置安裝。
+
+## 致謝 🙏
+
+感謝 Threads 網友 [@xinquan.tw](https://www.threads.com/@xinquan.tw) 提供 iPhone Duo 直向選單的架構。
 
 ## 免責聲明 📄
 

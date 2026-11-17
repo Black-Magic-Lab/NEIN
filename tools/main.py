@@ -16,10 +16,14 @@ import shutil
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
+import urllib.error
+import urllib.request
 import zipfile
 
 import analyze_patch_profile
+import macho
 import scan_ad_domains
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,14 +73,6 @@ class PatchProfile:
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
-
-
-def digest_file(path):
-    checksum = hashlib.sha256()
-    with path.open('rb') as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
-            checksum.update(chunk)
-    return checksum.hexdigest()
 
 
 def same_contents(left, right):
@@ -323,66 +319,13 @@ def apply_patch_sites(binary, sites):
     return bytes(result), ranges
 
 
-def load_commands(data):
-    """Return validated (cmd, offset, size) load commands of a thin 64-bit Mach-O."""
-    if len(data) < 32 or struct.unpack_from('<I', data, 0)[0] != 0xfeedfacf:
-        raise ValueError('Expected thin 64-bit Mach-O')
-    count, command_size = struct.unpack_from('<II', data, 16)
-    end = 32 + command_size
-    if end > len(data):
-        raise ValueError('Truncated Mach-O load commands')
-    commands = []
-    cursor = 32
-    for _ in range(count):
-        if cursor + 8 > end:
-            raise ValueError('Truncated Mach-O load command')
-        cmd, size = struct.unpack_from('<II', data, cursor)
-        if size < 8 or size % 8 or cursor + size > end:
-            raise ValueError('Invalid load-command layout')
-        commands.append((cmd, cursor, size))
-        cursor += size
-    if cursor != end:
-        raise ValueError('Load command size mismatch')
-    return commands
-
-
-def add_dylib(data):
-    commands = load_commands(data)
-    count, command_size = struct.unpack_from('<II', data, 16)
-    cursor = 32 + command_size
-    first_section = len(data)
-    for cmd, offset, size in commands:
-        if cmd in (0xc, 0x80000018, 0x8000001f):
-            relative = struct.unpack_from('<I', data, offset + 8)[0]
-            name = data[offset + relative:offset + size].split(b'\0')[0]
-            if name == LOAD_PATH.encode():
-                raise ValueError('Compatibility dylib already referenced')
-        if cmd == 0x19:
-            sections = struct.unpack_from('<I', data, offset + 64)[0]
-            for i in range(sections):
-                section_offset = struct.unpack_from('<I', data, offset + 72 + i * 80 + 48)[0]
-                if section_offset:
-                    first_section = min(first_section, section_offset)
-    raw = LOAD_PATH.encode() + b'\0'
-    size = (24 + len(raw) + 7) & ~7
-    command = struct.pack('<6I', 0xc, size, 24, 0, 0, 0) + raw
-    command += bytes(size - len(command))
-    if cursor + size > first_section or any(data[cursor:cursor + size]):
-        raise ValueError('Not enough zero-filled header padding; refusing to shift binary data')
-    result = bytearray(data)
-    struct.pack_into('<II', result, 16, count + 1, command_size + size)
-    result[cursor:cursor + size] = command
-    return bytes(result), {'load_command_offset': hex(cursor), 'load_command_size': size,
-                           'path': LOAD_PATH, 'first_section_offset': hex(first_section)}
-
-
 def macho_version(value):
     return f'{value >> 16}.{(value >> 8) & 0xff}.{value & 0xff}'
 
 
 def patch_build_version_sdk(data):
     build_versions = [
-        (offset, size) for cmd, offset, size in load_commands(data) if cmd == LC_BUILD_VERSION
+        (offset, size) for cmd, offset, size in macho.load_commands(data) if cmd == LC_BUILD_VERSION
     ]
     if len(build_versions) != 1:
         raise ValueError('Expected exactly one LC_BUILD_VERSION load command.')
@@ -419,14 +362,12 @@ def parse_args(argv=None):
                         help='Audited E2EE/authentication missing-entitlement retry with default Keychain group; includes diagnostics')
     parser.add_argument('--remove-ads', action='store_true',
                         help='Block audited ad domains and disable known ad views (verified on 26.14.0; experimental on 26.15.1)')
-    parser.add_argument('--hide-promotional-tabs', action='store_true',
-                        help='Hide VOOM, News, Shopping and Discover tab buttons (verified on 26.14.0; experimental on 26.15.1 and 26.17.0)')
     parser.add_argument('--collapse-friends-on-launch', action='store_true',
                         help='Initialize the Friends section as collapsed')
     parser.add_argument('--skin-theme', metavar='TARGET_UUID=SOURCE_UUID',
                         help='Give the target owned theme (e.g. the white theme) the look of the source theme, both while applied and after the system reverts to the default')
     parser.add_argument('--iphone-duo', action='store_true',
-                        help="Experimentally mark the app as built with the iOS 27.1 SDK so iPhone Duo uses the full inner display; keeps bars horizontal and shows LINE's two-column layout on the inner display")
+                        help="Experimentally mark the app as built with the iOS 27.1 SDK so iPhone Duo uses the full inner display, the system vertical bar and LINE's two-column layout; promotional tabs are removed from the tab bar controller")
     parser.add_argument('--allow-unverified', action='store_true',
                         help='Allow a different executable hash for a known version/build; still checks the original ARM64 instruction')
     args = parser.parse_args(argv)
@@ -439,10 +380,8 @@ def parse_args(argv=None):
         args.keychain_compat = True
         args.diagnostics = True
         args.remove_ads = True
-        args.hide_promotional_tabs = True
         args.collapse_friends_on_launch = True
-    if args.entry_only and (args.diagnostics or args.remove_ads or
-                            args.hide_promotional_tabs):
+    if args.entry_only and (args.diagnostics or args.remove_ads):
         parser.error('--entry-only cannot be combined with diagnostics, compatibility hooks, or ad removal.')
     if args.entry_only and args.primary_login:
         parser.error('--entry-only cannot be combined with --primary-login.')
@@ -526,7 +465,8 @@ def main():
             original if args.primary_login else
             patched_binary(original, profile, verify_hash=not args.allow_unverified)
         )
-        modified, injection = (entry_patched, None) if args.entry_only else add_dylib(entry_patched)
+        modified, injection = ((entry_patched, None) if args.entry_only
+                               else macho.add_dylib(entry_patched, LOAD_PATH))
         modified, optional_patch_ranges = apply_patch_sites(modified, patch_sites)
         modified, sdk_patch = (
             patch_build_version_sdk(modified) if args.iphone_duo else (modified, None)
@@ -614,53 +554,44 @@ def main():
                 'url_schemes_removed': True,
                 'source_signing_and_store_metadata_removed': True,
                 'remove_ads': args.remove_ads,
-                'hide_promotional_tabs': args.hide_promotional_tabs,
                 'collapse_friends_on_launch': args.collapse_friends_on_launch,
                 'enable_sticker_shop': bool(shop),
                 'enable_theme_shop': bool(theme),
                 'skin_theme': args.skin_theme,
                 'iphone_duo': None,
-                'source_ipa_sha256': digest_file(args.input),
-                'output_ipa_sha256': digest_file(args.output),
+                'source_ipa_sha256': macho.sha256_file(args.input),
+                'output_ipa_sha256': macho.sha256_file(args.output),
                 'source_executable_sha256': original_sha256, 'patched_executable_sha256': digest(modified),
                 'dylib_sha256': digest(lib_data) if lib_data is not None else None, 'injection': injection,
                 'entry_patch_offset': hex(profile.patch_offset),
                 'allowed_group_ids': [] if args.entry_only else ['group.com.linecorp.line', 'group.share.com.linecorp.line'],
                 'fallback': None if args.entry_only else 'Library/Application Support/LINEContainerCompat/<group ID>',
                 'scope': (
-                    'Main app only; audited E2EE and exact authentication-store Keychain missing-entitlement errors retry without explicit access group. No cross-extension sharing or push identity.'
+                    'Main app only; Keychain entitlement errors retry without an access group.'
                     if args.keychain_compat else
-                    'Main app only; private fallback containers are not shared with extensions. '
-                    'No Keychain remapping.'
+                    'Main app only; no Keychain remapping.'
                 ),
-                'verification': ('All retained archive contents identical except the updated Info.plist '
-                                 'and documented Mach-O patches; original main-app signature resources and store metadata, '
-                                 'all embedded app extensions and the Watch app were removed; '
-                                 'one dylib and verified icon preview assets were added; ZIP CRC passed; '
-                                 'dylib ad hoc signature verified.')}
+                'verification': 'Only Info.plist and Mach-O changed; extensions, Watch app and '
+                                'signature removed; dylib and icons added; ZIP and dylib checks passed.'}
     if args.collapse_friends_on_launch:
         manifest['home_friends'] = profile.home_friends
     if not shop:
         manifest['shops_skipped'] = (
-            'Executable is not the audited one for this profile; sticker and theme shop patches skipped.'
+            'Executable not audited; shop patches skipped.'
             if original_sha256 != profile.executable_sha256 else
-            'No audited sticker-shop patch for this build; sticker and theme shop patches skipped.'
+            'No sticker-shop patch for this build; shop patches skipped.'
         )
     elif not theme:
-        manifest['shops_skipped'] = (
-            'No audited theme-shop patch for this build; theme shop patch skipped.'
-        )
+        manifest['shops_skipped'] = 'No theme-shop patch for this build; theme shop skipped.'
     if shop:
         manifest['sticker_shop'] = {
             **shop,
-            'scope': 'Sticker availability, LIFF/native sticker routes and their shared coin entry checks only; global feature 3, theme/emoji/account guards, login identity, balance, billing, receipts, ownership and server authorization unchanged.',
-            'verification': 'Static dispatch, LIFF/native/coin entry and archive checks only for this build; no IAP support added. User-reported 26.17.0 sticker purchases use coins charged in original LINE; other versions still require real-device verification.',
+            'scope': 'Sticker shop routes and coin checks only; billing and server checks unchanged.',
         }
     if theme:
         manifest['theme_shop'] = {
             **theme,
-            'scope': 'Theme availability, the theme LIFF/native shop routes and the shared sticker code cave only; global feature 3, emoji/account guards, login identity, balance, billing, receipts, ownership and server authorization unchanged.',
-            'verification': 'Static dispatch, LIFF/native route and archive checks only for this build; no IAP support added. User-reported 26.17.0 real-device testing opened and browsed the shop and applied a free downloaded theme; paid theme purchases and other versions still require verification.',
+            'scope': 'Theme shop routes only; billing and server checks unchanged.',
         }
     if args.iphone_duo:
         manifest['iphone_duo'] = {
@@ -670,67 +601,33 @@ def main():
                 key: {'original': info.get(key), 'patched': value}
                 for key, value in iphone_duo_info_plist_changes(info).items()
             },
-            'vertical_bar_hook': (
-                '-[UIViewController preferredVerticalBarBehavior] returns '
-                'UIVerticalBarBehaviorDisabled on iOS 27.1 and later.'
+            'tab_removal_hook': (
+                '-[UITabBarController setViewControllers:animated:] drops promotional tabs; '
+                'LINE still sees the full list.'
             ),
             'split_layout': {
                 'device_model': IPHONE_DUO_MODEL,
                 'minimum_window_short_side_points': IPHONE_DUO_SPLIT_MINIMUM_SIDE,
-                'hook': (
-                    '-[LINE.NLSplitViewController viewDidLayoutSubviews] overrides the split '
-                    "controller's horizontal size class to regular on wide windows."
-                ),
+                'hook': 'NLSplitViewController uses regular width on wide windows.',
             },
-            'camera_layout_hook': (
-                '-[LineCameraSubsystem.CameraView layoutSubviews] caps the 16:9 preview '
-                'above the mode bar inside the safe area; -[YukiCameraView layoutSubviews] '
-                'keeps its Metal layer sized to its bounds after fold and rotation.'
-            ),
-            'scope': (
-                'Every iOS 27 device applies iOS 27.1 SDK UIKit behavior to this build '
-                '(for example zero default UIView layout margins); the two-column layout '
-                'is iPhone Duo only.'
-            ),
-            'verification': (
-                'Only the LC_BUILD_VERSION SDK field and Info.plist SDK keys changed; '
-                'minimum OS unchanged. User-reported real-device testing on iPhone Duo passed.'
-            ),
+            'home_settings_hook': 'Home settings gear opens line://nv/settings; '
+                                  'LINE buttons are mirrored into the vertical bar.',
+            'camera_layout_hook': 'LineCameraSubsystem.CameraView and YukiCameraView fit the window.',
         }
-    if args.remove_ads or args.hide_promotional_tabs:
+    # Every dylib hides VOOM, News, Shopping and Discover; only --entry-only has none.
+    if not args.entry_only:
         manifest['ad_removal'] = {
             'loader_hooks': args.remove_ads,
             'known_ad_view_hiding': args.remove_ads,
             'network_blocking': args.remove_ads,
-            'promotional_tab_filter': args.hide_promotional_tabs,
-            'home_settings_shortcut': args.hide_promotional_tabs,
             'scope': [
                 'GADAdLoader and GADBannerView request entry points',
                 'Google IMA request/start entry points',
                 'known LINE ad view class families',
                 'VOOM, News, Shopping and Discover tab controllers',
             ],
-            'verification': (
-                'Static hook ABI checks and archive integrity passed; '
-                'real-device UI and network behavior still require testing.'
-            ),
-            'promotional_tab_safety': (
-                'Preserves the original controller and tab-item arrays. '
-                'Uses a separate native UITabBar with copied non-promotional items '
-                'for UIKit-managed widths, hit regions, selection effects and badges. '
-                'Hides and disables interaction with the original bar, retaining '
-                'its safe-area reservation. Mirrors source bar visibility/geometry '
-                'changes and navigation hide-bottom-bar requests without waiting '
-                'for user interaction. Scoped selection-setter guards skip '
-                'promotional destinations; layout corrects a hidden selection '
-                'that bypassed setters. No private button/lens geometry hooks. '
-                'Native appearance and LINE swipe behavior require device testing.'
-            ),
-            'siri_compat': (
-                'Returns no INVocabulary instance when the re-signed app lacks '
-                'the com.apple.developer.siri entitlement; Siri integrations '
-                'remain disabled instead of triggering an iOS 27 exception.'
-            ),
+            'promotional_tab_safety': 'A copied tab bar hides promotional tabs; original arrays kept.',
+            'siri_compat': 'No INVocabulary without the Siri entitlement, avoiding an iOS 27 crash.',
         }
         if args.remove_ads:
             manifest['ad_removal']['blocked_domains'] = domains
@@ -738,18 +635,14 @@ def main():
                 AD_DOMAIN_LIST.read_bytes()
             )
             manifest['ad_removal']['network_scope'] = (
-                'NSURLProtocol plus NSURLSessionConfiguration injection and '
-                'WKWebView top-level navigation blocking. Taboola suffixes are '
-                'intentionally broad and can disable LINE News recommendations.'
+                'NSURLSession and WKWebView blocking; Taboola rules may break News recommendations.'
             )
     if args.entry_only:
         manifest.update({
             'scope': (
-                'Secondary-login entry and sticker/theme shop availability; no injected dylib or container/Keychain hooks.'
-                if theme else
-                'Secondary-login entry and sticker-shop availability; no injected dylib or container/Keychain hooks.'
-                if shop else
-                'Secondary-login entry only; no injected dylib or container/Keychain hooks.'
+                'Login entry and sticker/theme shops; no dylib.' if theme else
+                'Login entry and sticker shop; no dylib.' if shop else
+                'Login entry only; no dylib.'
             ),
             'source_ipa': args.input.name,
             'output_ipa': args.output.name,
@@ -760,18 +653,15 @@ def main():
             'changed_byte_offsets': [
                 hex(i) for i, (a, b) in enumerate(zip(original, modified)) if a != b
             ],
-            'verification': 'All other retained ZIP member contents identical; icon picker disabled; ZIP CRC and patch verification passed.',
+            'verification': 'Other ZIP members identical; ZIP and patch checks passed.',
         })
     elif args.primary_login:
         manifest.update({
-            'scope': 'Primary-phone login branch preserved; no iPad secondary-login entry patch applied.',
+            'scope': 'Primary login kept; no login entry patch.',
             'source_ipa': args.input.name,
             'output_ipa': args.output.name,
             'patch': None,
-            'verification': (
-                'Original login branch preserved; all other documented Mach-O patches, '
-                'injected dylib, and ZIP verification passed.'
-            ),
+            'verification': 'Mach-O, dylib and ZIP checks passed.',
         })
     args.output.with_suffix('.manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     print(json.dumps(manifest, indent=2))
@@ -804,13 +694,6 @@ def fetch_theme_package(product_id, cache_dir):
     """Download a theme package from the public shop CDN and unpack it into
     {product_id}/ (theme.json + images/). The newest revision present is
     picked; results are cached so repeated builds stay offline."""
-    import io
-    import re
-    import tarfile
-    import urllib.error
-    import urllib.request
-    import zipfile
-
     base = theme_package_base_url(product_id)
     out_dir = cache_dir / product_id
     marker = out_dir / '.downloaded'
@@ -881,10 +764,6 @@ def build_skin_theme_tar(target_dir, source_dir, tar_path):
     """Build the embedded tar: the source theme's files with the target's
     manifest identity, so package version checks see the owned theme and
     never re-download over the seeded skin."""
-    import io
-    import json
-    import tarfile
-
     manifest = json.loads((target_dir / 'theme.json').read_text())
     target_identity = manifest.get('manifest', {})
     source_theme = json.loads((source_dir / 'theme.json').read_text())
@@ -900,7 +779,7 @@ def build_skin_theme_tar(target_dir, source_dir, tar_path):
             member = tarfile.TarInfo(path.relative_to(source_dir).as_posix())
             member.size = len(data)
             member.mode = 0o644
-            tar.addfile(member, io.BytesIO(data))
+            tar.addfile(member, BytesIO(data))
     return tar_path
 
 
@@ -966,7 +845,6 @@ def build_compat_dylib(args, info, patch_profile, domains):
          ['-DNEIN_MULTI_DIAGNOSTICS=1']),
         (args.keychain_compat, None, ['-DNEIN_MULTI_KEYCHAIN_COMPAT=1', '-framework', 'Security']),
         (args.remove_ads, 'noads', ['-DNEIN_MULTI_REMOVE_ADS=1', '-framework', 'WebKit']),
-        (args.hide_promotional_tabs, 'no-promotional-tabs', ['-DNEIN_MULTI_HIDE_PROMOTIONAL_TABS=1']),
         (args.skin_theme, 'skin-themes', ['-DNEIN_MULTI_SKIN_THEME=1']),
         (args.iphone_duo, 'iphone-duo', ['-DNEIN_MULTI_IPHONE_DUO=1', '-framework', 'QuartzCore']),
         (args.primary_login, 'primary-login', []),
@@ -1016,7 +894,7 @@ def build_compat_dylib(args, info, patch_profile, domains):
     subprocess.run(['codesign', '--verify', '--strict', str(lib)], check=True)
     lib_data = lib.read_bytes()
     # The load command requests version 0.0.0, matching the dylib's LC_ID_DYLIB.
-    identities = [(offset, size) for cmd, offset, size in load_commands(lib_data) if cmd == 0xd]
+    identities = [(offset, size) for cmd, offset, size in macho.load_commands(lib_data) if cmd == 0xd]
     if len(identities) != 1 or identities[0][1] < 24:
         raise ValueError('Dylib identity command missing')
     offset, size = identities[0]

@@ -395,6 +395,14 @@ int main(void) {
         assert(settingsOpened == routesBeforeHomeShortcut + 1);
         assert(threeTabPresentation.homeTapTimes.count == 0);
         assert(!NEINIsMainLineTabBar(@[threeTabItems[0], threeTabItems[1]]));
+        NEINVisibleTabAddsSettings = NO;
+        NEINUpdateVisibleTabBar(threeTabController);
+        assert(threeTabPresentation.active && threeTabPresentation.bar.items.count == 3);
+        assert(threeTabPresentation.bar.items.lastObject != threeTabPresentation.settingsItem);
+        NEINVisibleTabAddsSettings = YES;
+        NEINUpdateVisibleTabBar(threeTabController);
+        assert(threeTabPresentation.bar.items.count == 4);
+        assert(threeTabPresentation.bar.items.lastObject == threeTabPresentation.settingsItem);
 
         UITabBarController *nativeSettingsController = [UITabBarController new];
         nativeSettingsController.tabBar = [[UITabBar alloc] initWithFrame:CGRectMake(0, 790, 402, 83)];

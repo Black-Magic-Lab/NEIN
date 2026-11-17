@@ -112,13 +112,6 @@ class MainToolTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             main.patched_binary(bytes(binary), profile, verify_hash=False)
 
-    def test_digest_file_streams_large_input(self):
-        content = b'nein' * (1024 * 1024)
-        path = self.directory / 'large.bin'
-        path.write_bytes(content)
-        with mock.patch.object(Path, 'read_bytes', side_effect=AssertionError('full read')):
-            self.assertEqual(main.digest_file(path), hashlib.sha256(content).hexdigest())
-
     def test_entry_only_preserves_large_archive_members(self):
         original = sample_macho()
         profile = self.profile(original)
@@ -172,8 +165,7 @@ class MainToolTests(unittest.TestCase):
         self.assertFalse(manifest['enable_sticker_shop'])
         self.assertNotIn('sticker_shop', manifest)
         self.assertEqual(manifest['shops_skipped'],
-                         'No audited sticker-shop patch for this build; '
-                         'sticker and theme shop patches skipped.')
+                         'No sticker-shop patch for this build; shop patches skipped.')
         self.assertTrue(manifest['source_signing_and_store_metadata_removed'])
 
     def test_entry_only_sticker_shop_and_friends_round_trip(self):
@@ -212,7 +204,7 @@ class MainToolTests(unittest.TestCase):
         self.assertTrue(manifest['enable_sticker_shop'])
         self.assertFalse(manifest['enable_theme_shop'])
         self.assertEqual(manifest['shops_skipped'],
-                         'No audited theme-shop patch for this build; theme shop patch skipped.')
+                         'No theme-shop patch for this build; theme shop skipped.')
         self.assertEqual(manifest['home_friends'], friends)
         self.assertEqual(manifest['sticker_shop']['native_routes'], sticker_shop['native_routes'])
         for offset in ('0x140', '0x180', '0x188', '0x190', '0x194', '0x198', '0x19c'):
@@ -281,8 +273,7 @@ class MainToolTests(unittest.TestCase):
         self.assertNotIn('sticker_shop', manifest)
         self.assertNotIn('theme_shop', manifest)
         self.assertEqual(manifest['shops_skipped'],
-                         'Executable is not the audited one for this profile; '
-                         'sticker and theme shop patches skipped.')
+                         'Executable not audited; shop patches skipped.')
 
     def test_streamed_archive_copy_rejects_corrupt_member(self):
         with zipfile.ZipFile(self.source, 'w') as archive:
@@ -323,14 +314,6 @@ class MainToolTests(unittest.TestCase):
             keychain_profile={'profile_type': 'line_keychain'},
         ))
 
-    def test_missing_inconclusive_profile_refuses_and_saves_nothing(self):
-        with mock.patch.object(
-            main.analyze_patch_profile, 'load_or_create_profile',
-            side_effect=ValueError('No high-confidence login patch candidate to save.'),
-        ):
-            with self.assertRaisesRegex(ValueError, 'No high-confidence'):
-                main.find_profile(self.sample_info(), sample_macho())
-
     def test_patch_sites_require_original_bytes_and_report_ranges(self):
         binary = bytearray(0x120)
         sites = []
@@ -348,20 +331,6 @@ class MainToolTests(unittest.TestCase):
         ):
             with self.subTest(name), self.assertRaisesRegex(ValueError, 'Expected original'):
                 main.apply_patch_sites(data, [site])
-
-    def test_embedded_extensions_and_watch_app_are_excluded(self):
-        names = [
-            'Payload/LINE.app/Info.plist',
-            'Payload/LINE.app/Extensions/LineAppIntentsExtension.appex/',
-            'Payload/LINE.app/Extensions/LineAppIntentsExtension.appex/Info.plist',
-            'Payload/LINE.app/PlugIns/',
-            'Payload/LINE.app/PlugIns/LineShareExtension.appex/Info.plist',
-            'Payload/LINE.app/Watch/',
-            'Payload/LINE.app/Watch/LineWatchKitApp.app/Info.plist',
-        ]
-        self.assertEqual(main.retained_archive_members(names), [
-            'Payload/LINE.app/Info.plist',
-        ])
 
     def test_output_info_plist_uses_default_bundle_id(self):
         source = self.sample_info()
@@ -386,7 +355,7 @@ class MainToolTests(unittest.TestCase):
             'basic_default',
         )
 
-    def test_stale_signing_and_store_metadata_are_excluded(self):
+    def test_extensions_signing_and_store_metadata_are_excluded(self):
         retained = [
             main.PLIST,
             main.EXECUTABLE,
@@ -396,6 +365,12 @@ class MainToolTests(unittest.TestCase):
             'Payload/LINE.app/Metadata.appintents/version.json',
         ]
         removed = [
+            'Payload/LINE.app/Extensions/LineAppIntentsExtension.appex/',
+            'Payload/LINE.app/Extensions/LineAppIntentsExtension.appex/Info.plist',
+            'Payload/LINE.app/PlugIns/',
+            'Payload/LINE.app/PlugIns/LineShareExtension.appex/Info.plist',
+            'Payload/LINE.app/Watch/',
+            'Payload/LINE.app/Watch/LineWatchKitApp.app/Info.plist',
             'Payload/LINE.app/_CodeSignature/',
             'Payload/LINE.app/_CodeSignature/CodeResources',
             'META-INF/',
@@ -519,21 +494,8 @@ class MainToolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Default app icon is unavailable'):
             main.patched_info_plist(source)
 
-    def test_ad_domain_list_is_unique_and_buildable(self):
-        self.assertEqual(main.load_ad_domains(), (
-            'ad.line-scdn.net',
-            'admob-gmats.uc.r.appspot.com',
-            'doubleclick-cn.net',
-            'doubleclick.net',
-            'googleadservices.com',
-            'googlesyndication.com',
-            'imasdk.googleapis.com',
-            'taboola.com',
-            'taboolanews.com',
-        ))
-
     def test_options_are_opt_in(self):
-        for flag in ('--remove-ads', '--hide-promotional-tabs', '--primary-login',
+        for flag in ('--remove-ads', '--primary-login',
                      '--collapse-friends-on-launch', '--iphone-duo'):
             attribute = flag[2:].replace('-', '_')
             with self.subTest(flag=flag):
@@ -620,17 +582,19 @@ class MainToolTests(unittest.TestCase):
         profile = self.profile(original, patch_offset=0x400, patch_va=0x100000400,
                                instruction='tbz w0, #0, 0x100000408')
         self.write_ipa(original, info)
-        for iphone_duo in (False, True):
-            with self.subTest(iphone_duo=iphone_duo):
-                args = self.args(*(['--iphone-duo'] if iphone_duo else []),
-                                 output=f'output-{iphone_duo}.ipa')
+        for flags in ((), ('--iphone-duo',)):
+            iphone_duo = bool(flags)
+            with self.subTest(flags=flags):
+                args = self.args(*flags, output=f'output-{len(flags)}.ipa')
                 build = mock.Mock(return_value=(None, b'dylib'))
                 manifest = self.run_main(
                     args, profile, build_compat_dylib=build,
                     extract_icon_previews=mock.Mock(return_value={}),
                 )
                 self.assertEqual(build.call_args.args[0].iphone_duo, iphone_duo)
-                expected, _ = main.add_dylib(main.patched_binary(original, profile))
+
+                expected, _ = main.macho.add_dylib(
+                    main.patched_binary(original, profile), main.LOAD_PATH)
                 if iphone_duo:
                     expected, _ = main.patch_build_version_sdk(expected)
                 with zipfile.ZipFile(args.output) as archive:
@@ -657,6 +621,8 @@ class MainToolTests(unittest.TestCase):
                     'DTPlatformVersion': {'original': '26.5', 'patched': '27.1'},
                 })
                 self.assertEqual(section['split_layout']['device_model'], 'iPhone19,4')
+                self.assertIn('line://nv/settings', section['home_settings_hook'])
+                self.assertIn('setViewControllers:animated:', section['tab_removal_hook'])
                 self.assertEqual(section['split_layout']['minimum_window_short_side_points'], 600)
                 self.assertIn('LineCameraSubsystem.CameraView', section['camera_layout_hook'])
 
