@@ -722,11 +722,10 @@ static NSArray<UIBarButtonItem *> *NEINDuoPageOwnButtons(UIViewController *page,
 
 static char NEINDuoMoreItemKey;
 static char NEINDuoMoreSourcesKey;
-static BOOL NEINDuoKeyboardShown;
 
-// With the keyboard up, a chat room's buttons overflow the shortened vertical
-// bar beside the back button, so they share one "more" button whose menu runs
-// them; the menu is built on opening, from the buttons of the latest pass.
+// A chat room's buttons overflow the vertical bar beside the back button once
+// the keyboard shortens it, so they always share one "more" button whose menu
+// runs them; the menu is built on opening, from the buttons of the latest pass.
 static UIBarButtonItem *NEINDuoChatMoreItem(UIViewController *page, NSArray<UIBarButtonItem *> *items) {
     UIBarButtonItem *more = objc_getAssociatedObject(page, &NEINDuoMoreItemKey);
     if (!more) {
@@ -773,9 +772,7 @@ static NSArray<UIBarButtonItem *> *NEINDuoPageButtons(UIViewController *page, BO
     // the one LINE adds once the split folds would sit in a top bar of its own.
     BOOL pushed = navigation && navigation.viewControllers.firstObject != page;
     UIView *chatBar = pushed || inDetail ? chatBars.firstObject : nil;
-    if (chatBar && NEINDuoBarShown && NEINDuoKeyboardShown && own.count > 1) {
-        own = @[NEINDuoChatMoreItem(page, own)];
-    }
+    if (chatBar && NEINDuoBarShown && own.count > 1) own = @[NEINDuoChatMoreItem(page, own)];
     NSMutableArray<UIView *> *contents = [NSMutableArray new];
     if (chatBar) NEINDuoFindClass(chatBar, @"ChatNavigationBarContentView", contents);
     UIView *content = NEINDuoBarShown ? contents.firstObject : nil;
@@ -1245,6 +1242,82 @@ static BOOL NEINDuoHidProxyTabBar;
 
 // The page at the window's trailing edge hosts the mirrored buttons: the
 // selected tab's top page, or the detail column's while both columns show.
+static __weak UIView *NEINDuoLiftedTabs;
+static __weak UIView *NEINDuoWidenedInput;
+static char NEINDuoInputTrailingKey;
+
+// With the tab group lifted or the keyboard up, the strip the input bar's safe
+// area keeps for the vertical bar is empty, so its buttons run to the edge; nil
+// restores LINE's.
+static void NEINDuoWidenInputBar(UIView *input) {
+    UIView *previous = NEINDuoWidenedInput;
+    if (previous && previous != input) {
+        NSArray<NSLayoutConstraint *> *saved = objc_getAssociatedObject(previous, &NEINDuoInputTrailingKey);
+        saved[1].active = NO;
+        saved[0].active = YES;
+        objc_setAssociatedObject(previous, &NEINDuoInputTrailingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    NEINDuoWidenedInput = nil;
+    if (!input) return;
+    NSArray<NSLayoutConstraint *> *saved = objc_getAssociatedObject(input, &NEINDuoInputTrailingKey);
+    if (!saved) {
+        NSLayoutConstraint *line = nil;
+        for (NSLayoutConstraint *constraint in input.constraints) {
+            if (constraint.active && [constraint.firstItem isKindOfClass:UIStackView.class] &&
+                    constraint.secondItem == input.safeAreaLayoutGuide &&
+                    constraint.firstAttribute == NSLayoutAttributeTrailing) {
+                line = constraint;
+            }
+        }
+        if (!line) return;
+        NSLayoutConstraint *ours = [((UIView *)line.firstItem).trailingAnchor
+            constraintEqualToAnchor:input.trailingAnchor constant:line.constant];
+        ours.priority = line.priority;
+        saved = @[line, ours];
+        objc_setAssociatedObject(input, &NEINDuoInputTrailingKey, saved, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (saved[0].active) saved[0].active = NO;
+    if (!saved[1].active) saved[1].active = YES;
+    NEINDuoWidenedInput = input;
+}
+
+// The vertical bar pins its tab group to the bottom, over a chat room's input
+// bar, and UIKit offers no placement for it, so its glass is shifted above it.
+// shortcut: matches UIKit's private vertical bar class names; recheck after iOS updates.
+static void NEINDuoLiftTabGroup(UIViewController *page) {
+    UIView *glass = nil;
+    UIView *widened = nil;
+    CGFloat lift = 0;
+    UIWindow *window = page.viewIfLoaded.window;
+    if (window && page == NEINDuoChatRoomPage && NEINDuoBarShown) {
+        NSMutableArray<UIView *> *found = [NSMutableArray new];
+        NEINDuoFindClass(window, @"ToolbarCustomViewRepresentable__", found);
+        glass = found.firstObject.superview;
+        while (glass && ![NSStringFromClass(glass.class) hasSuffix:@"GlassInteractionView"]) glass = glass.superview;
+        NSMutableArray<UIView *> *inputs = [NSMutableArray new];
+        NEINDuoFindClass(page.view, @"ChatInputBar", inputs);
+        for (UIView *input in inputs) {
+            CGRect frame = [input convertRect:input.bounds toView:window];
+            if (CGRectGetMinX(frame) < 0) continue;
+            // Raised by the keyboard, the input bar is clear of the shortened bar;
+            // at the bottom, only once the tab group is lifted off it.
+            if (CGRectGetMaxY(frame) < CGRectGetMaxY(window.bounds) - 1) {
+                widened = input;
+            } else if (glass) {
+                CGFloat bottom = CGRectGetMaxY([glass convertRect:glass.bounds toView:window]) - glass.transform.ty;
+                lift = MAX(0, bottom - (CGRectGetMinY(frame) - 8));
+                widened = input;
+            }
+            break;
+        }
+    }
+    NEINDuoWidenInputBar(widened);
+    UIView *previous = NEINDuoLiftedTabs;
+    if (previous && previous != glass) previous.transform = CGAffineTransformIdentity;
+    NEINDuoLiftedTabs = lift > 0 ? glass : nil;
+    if (glass && glass.transform.ty != -lift) glass.transform = CGAffineTransformMakeTranslation(0, -lift);
+}
+
 static void NEINDuoUpdateVerticalBar(UITabBarController *tabs, UIViewController *homeTab,
                                      UINavigationItem *home, BOOL gear) {
     // The tab switch while the split collapses lays the tab bar out again.
@@ -1329,6 +1402,7 @@ static void NEINDuoUpdateVerticalBar(UITabBarController *tabs, UIViewController 
     UIViewController *toolbarPage = !proxyPossible && (detail || (page && page == NEINDuoChatRoomPage))
         ? page : nil;
     NEINDuoShowTabToolbar(toolbarPage, tabs);
+    NEINDuoLiftTabGroup(page);
     NEINDuoShowNavigationBar(mirrored.count || pageGear || detail ? page : nil);
 }
 
@@ -1584,19 +1658,6 @@ static void NEINDuoInstallVerticalBarHooks(void) {
                            (IMP *)&NEINDuoOriginalVerticalBarBehavior)) {
         NSLog(@"[NEINIPhoneDuo] Vertical bar behavior unavailable; login keeps the bar's strip.");
     }
-    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
-    [center addObserverForName:UIKeyboardWillShowNotification object:nil queue:nil
-                    usingBlock:^(NSNotification *note) {
-        (void)note;
-        NEINDuoKeyboardShown = YES;
-        NEINDuoQueueRefresh();
-    }];
-    [center addObserverForName:UIKeyboardWillHideNotification object:nil queue:nil
-                    usingBlock:^(NSNotification *note) {
-        (void)note;
-        NEINDuoKeyboardShown = NO;
-        NEINDuoQueueRefresh();
-    }];
     if (!NEINHookOwnMethod(UINavigationController.class, @selector(viewDidLayoutSubviews),
                            "v", 2, NULL, NULL, (IMP)NEINDuoNavigationDidLayoutSubviews,
                            (IMP *)&NEINDuoOriginalNavigationLayout)) {
