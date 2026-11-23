@@ -1244,37 +1244,46 @@ static BOOL NEINDuoHidProxyTabBar;
 // selected tab's top page, or the detail column's while both columns show.
 static __weak UIView *NEINDuoLiftedTabs;
 static __weak UIView *NEINDuoWidenedInput;
-static char NEINDuoInputTrailingKey;
+static char NEINDuoInputEdgeKey;
 
 // With the tab group lifted or the keyboard up, the strip the input bar's safe
-// area keeps for the vertical bar is empty, so its buttons run to the edge; nil
-// restores LINE's.
+// area keeps for the vertical bar is empty, so its buttons run to the edge on
+// the bar's side, the side with the larger inset; nil restores LINE's.
 static void NEINDuoWidenInputBar(UIView *input) {
+    NSLayoutAttribute side = NSLayoutAttributeNotAnAttribute;
+    if (input) {
+        UIEdgeInsets safe = input.safeAreaInsets;
+        BOOL rtl = input.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;
+        CGFloat leading = rtl ? safe.right : safe.left;
+        CGFloat trailing = rtl ? safe.left : safe.right;
+        if (leading != trailing) side = leading > trailing ? NSLayoutAttributeLeading : NSLayoutAttributeTrailing;
+    }
     UIView *previous = NEINDuoWidenedInput;
-    if (previous && previous != input) {
-        NSArray<NSLayoutConstraint *> *saved = objc_getAssociatedObject(previous, &NEINDuoInputTrailingKey);
+    NSArray<NSLayoutConstraint *> *saved = objc_getAssociatedObject(previous, &NEINDuoInputEdgeKey);
+    if (previous && (previous != input || saved[0].firstAttribute != side)) {
         saved[1].active = NO;
         saved[0].active = YES;
-        objc_setAssociatedObject(previous, &NEINDuoInputTrailingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(previous, &NEINDuoInputEdgeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     NEINDuoWidenedInput = nil;
-    if (!input) return;
-    NSArray<NSLayoutConstraint *> *saved = objc_getAssociatedObject(input, &NEINDuoInputTrailingKey);
+    if (!input || side == NSLayoutAttributeNotAnAttribute) return;
+    saved = objc_getAssociatedObject(input, &NEINDuoInputEdgeKey);
     if (!saved) {
         NSLayoutConstraint *line = nil;
         for (NSLayoutConstraint *constraint in input.constraints) {
             if (constraint.active && [constraint.firstItem isKindOfClass:UIStackView.class] &&
-                    constraint.secondItem == input.safeAreaLayoutGuide &&
-                    constraint.firstAttribute == NSLayoutAttributeTrailing) {
+                    constraint.secondItem == input.safeAreaLayoutGuide && constraint.firstAttribute == side) {
                 line = constraint;
             }
         }
         if (!line) return;
-        NSLayoutConstraint *ours = [((UIView *)line.firstItem).trailingAnchor
-            constraintEqualToAnchor:input.trailingAnchor constant:line.constant];
+        UIView *stack = line.firstItem;
+        NSLayoutConstraint *ours = side == NSLayoutAttributeLeading
+            ? [stack.leadingAnchor constraintEqualToAnchor:input.leadingAnchor constant:line.constant]
+            : [stack.trailingAnchor constraintEqualToAnchor:input.trailingAnchor constant:line.constant];
         ours.priority = line.priority;
         saved = @[line, ours];
-        objc_setAssociatedObject(input, &NEINDuoInputTrailingKey, saved, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(input, &NEINDuoInputEdgeKey, saved, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if (saved[0].active) saved[0].active = NO;
     if (!saved[1].active) saved[1].active = YES;
