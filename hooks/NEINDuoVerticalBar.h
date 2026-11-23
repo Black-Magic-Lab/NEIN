@@ -1290,6 +1290,18 @@ static void NEINDuoWidenInputBar(UIView *input) {
     NEINDuoWidenedInput = input;
 }
 
+// The vertical bar's buttons, other than the tab group, stop above input; a
+// Live Activity in the Dynamic Island pushes them down onto the raised input bar.
+static BOOL NEINDuoBarClearOf(UIWindow *window, UIView *page, UIView *tabs, CGRect input) {
+    NSMutableArray<UIView *> *glasses = [NSMutableArray new];
+    NEINDuoFindClass(window, @"GlassInteractionView", glasses);
+    for (UIView *view in glasses) {
+        if (view == tabs || [view isDescendantOfView:page]) continue;
+        if (CGRectIntersectsRect([view convertRect:view.bounds toView:window], input)) return NO;
+    }
+    return YES;
+}
+
 // The vertical bar pins its tab group to the bottom, over a chat room's input
 // bar, and UIKit offers no placement for it, so its glass is shifted above it.
 // shortcut: matches UIKit's private vertical bar class names; recheck after iOS updates.
@@ -1308,8 +1320,8 @@ static void NEINDuoLiftTabGroup(UIViewController *page) {
         for (UIView *input in inputs) {
             CGRect frame = [input convertRect:input.bounds toView:window];
             if (CGRectGetMinX(frame) < 0) continue;
-            // Raised by the keyboard, the input bar is clear of the shortened bar;
-            // at the bottom, only once the tab group is lifted off it.
+            // Raised by the keyboard, the input bar is clear of the shortened bar's
+            // tab group; at the bottom, only once the tab group is lifted off it.
             if (CGRectGetMaxY(frame) < CGRectGetMaxY(window.bounds) - 1) {
                 widened = input;
             } else if (glass) {
@@ -1317,6 +1329,7 @@ static void NEINDuoLiftTabGroup(UIViewController *page) {
                 lift = MAX(0, bottom - (CGRectGetMinY(frame) - 8));
                 widened = input;
             }
+            if (widened && !NEINDuoBarClearOf(window, page.view, glass, frame)) widened = nil;
             break;
         }
     }
