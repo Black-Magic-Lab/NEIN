@@ -2,9 +2,10 @@
 
 [iOS 版本說明](README.md)
 
-## NEIN macOS 26.4.2
+## NEIN macOS 26.5.0
 
-本 repo 也包含一個針對本機 macOS LINE 26.4.2（build 3955）的研究原型。
+本 repo 也包含一個針對 macOS LINE 26.5.0（build 3975）的研究原型，亦支援
+26.4.2（build 3955）。
 macOS 版 LINE 使用 Qt/QML，不能直接套用 iOS hook。穩定權限版採用兩層 App：
 外層顯示為 `NEIN`，內層 LINE 保留原本的 `jp.naver.line.mac` Bundle ID，讓
 LINE 的既有資料位置與登入流程維持相容；原始 `/Applications/LINE.app` 不會被修改。
@@ -17,13 +18,13 @@ SIGNING_IDENTITY='Developer ID Application: JYITECH CO.,LTD (Q6F5UHP863)'
 
 python3 tools/mac_main.py \
   /Applications/LINE.app \
-  output/NEIN-26.4.2-same-id-stable.app \
+  output/NEIN-26.5.0-same-id-stable.app \
   --bundle-identifier jp.naver.line.mac \
   --disable-qt-ad-hiding \
   --signing-identity "$SIGNING_IDENTITY"
 
 python3 tools/build_same_id_launcher.py \
-  output/NEIN-26.4.2-same-id-stable.app \
+  output/NEIN-26.5.0-same-id-stable.app \
   output/NEIN.app \
   --signing-identity "$SIGNING_IDENTITY"
 ```
@@ -34,15 +35,25 @@ Widgets 的可見性。先前的 Qt/QML 實驗 hook 可能造成登入視窗不�
 路徑也避免啟動器每次建立隨機路徑，降低 macOS 重複詢問「存取其他 App 資料」的機率。
 首次使用同一個 Bundle ID 仍可能需要在 macOS 權限提示中按下 Allow。
 
+可在 `tools/mac_main.py` 指令加入實驗性 `--collapse-chat-ad`，調整聊天與好友
+清單底部的廣告面板位置。LINE 26.5.0 修正版已確認可以登入，但測試帳號未顯示
+廣告，廣告出現時的顯示、收合行為以及未讀區仍未驗證；其他廣告位置也不在
+此次處理範圍。未加此選項時保留原始版面，底部黑色廣告區可能仍然存在。
+
+可用 `python3 tools/check_mac_ad_activity.py --minutes 30` 統計 macOS 系統日誌中
+可讀到的 LINE 廣告請求、面板安裝嘗試及失效事件；程式只輸出數量，不輸出日誌內容。
+LINE 不一定將這些事件寫入可讀取的系統日誌，安裝嘗試也不能證明廣告已顯示，
+因此此工具的廣告存在狀態會標示為未知，不能用來判定修正已通過廣告實測。
+
 輸出 App 旁的 `.manifest.json` 會記錄版本、雜湊、Bundle ID、簽名與實際啟用的
 功能。要建立安裝套件和拖放映像檔，可執行：
 
 ```sh
 python3 tools/package_macos.py output/NEIN.app output \
-  --base-name NEIN-26.4.2-stable-permissions --force
+  --base-name NEIN-26.5.0-stable-permissions --force
 ```
 
-這會產生 `NEIN-26.4.2-stable-permissions.pkg` 和
-`NEIN-26.4.2-stable-permissions.dmg`。`.pkg` 安裝到 `/Applications`，`.dmg`
+這會產生 `NEIN-26.5.0-stable-permissions.pkg` 和
+`NEIN-26.5.0-stable-permissions.dmg`。`.pkg` 安裝到 `/Applications`，`.dmg`
 則包含可拖放到 Applications 的 `NEIN.app`。套件是本機研究建置，未代表官方簽署或
 公證；登入、訊息同步、已讀、頭像和圖片仍應在測試帳號逐項確認。

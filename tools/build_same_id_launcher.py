@@ -112,6 +112,7 @@ def main(argv=None):
         'dns_blocking': False,
         'qt_ad_hiding': inner_manifest.get('qt_ad_hiding', True),
         'qt_widgets_ad_hiding': inner_manifest.get('qt_widgets_ad_hiding', False),
+        'collapse_chat_ad': inner_manifest.get('collapse_chat_ad', False),
         'signing_identity': (
             'ad-hoc' if args.signing_identity == '-' else args.signing_identity
         ),

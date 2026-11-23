@@ -50,7 +50,13 @@ int main(void) {
         // Keep one stable runtime path per LINE version.  A random path on
         // every launch makes macOS TCC treat the app as a new file location
         // and repeatedly ask for folder access.
-        NSString *runtimeName = [NSString stringWithFormat:@"LINE-%@.app", version];
+        NSString *variant = innerInfo[@"NEINRuntimeVariant"];
+        NSString *runtimeName;
+        if ([variant isEqualToString:@"main-ad-layout-4"]) {
+            runtimeName = [NSString stringWithFormat:@"LINE-%@-%@.app", version, variant];
+        } else {
+            runtimeName = [NSString stringWithFormat:@"LINE-%@.app", version];
+        }
         NSString *runtimeApp = [runtimeRoot stringByAppendingPathComponent:runtimeName];
         NSString *runtimeExecutable = [runtimeApp
             stringByAppendingPathComponent:@"Contents/MacOS/LINE"];
@@ -105,8 +111,14 @@ int main(void) {
             if (errno == EINTR) continue;
             return errno;
         }
-        if (WIFEXITED(childStatus)) return WEXITSTATUS(childStatus);
-        if (WIFSIGNALED(childStatus)) return 128 + WTERMSIG(childStatus);
+        if (WIFEXITED(childStatus)) {
+            NSLog(@"[NEINLauncher] LINE exited with status %d", WEXITSTATUS(childStatus));
+            return WEXITSTATUS(childStatus);
+        }
+        if (WIFSIGNALED(childStatus)) {
+            NSLog(@"[NEINLauncher] LINE terminated by signal %d", WTERMSIG(childStatus));
+            return 128 + WTERMSIG(childStatus);
+        }
         return 1;
     }
 }
