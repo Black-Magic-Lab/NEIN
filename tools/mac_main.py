@@ -2,6 +2,7 @@
 """Build an experimental ad-blocking copy of the installed LINE macOS app."""
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import plistlib
@@ -9,6 +10,7 @@ import shutil
 import struct
 import subprocess
 import tempfile
+import zlib
 
 import macho
 import scan_ad_domains
@@ -25,6 +27,60 @@ HOOK_RELATIVE = Path('Contents/Frameworks') / HOOK_NAME
 HOOK_LOAD_PATH = '@executable_path/../Frameworks/' + HOOK_NAME
 # hooks/NEINMacHooks.mm blocks exactly this audited list.
 BLOCKED_DOMAINS = scan_ad_domains.AD_SUFFIXES
+MAIN_LAYOUT_SHA256 = 'd8d961306f08a18c2529581b9853adc2699f30ef13e17c5d7953d8b583e3c36f'
+
+
+def collapse_chat_ad_layout(data):
+    """Patch the audited chat layout resource in both universal slices."""
+    result = bytearray(data)
+    matches = []
+    cursor = 0
+    while True:
+        pos = data.find(b'\x78\xda', cursor)
+        if pos < 0:
+            break
+        cursor = pos + 2
+        if pos < 8 or struct.unpack_from('>I', data, pos - 4)[0] != 62979:
+            continue
+        length = struct.unpack_from('>I', data, pos - 8)[0]
+        if length < 6 or pos - 4 + length > len(data):
+            continue
+        stream = data[pos:pos - 4 + length]
+        try:
+            inflater = zlib.decompressobj()
+            layout = inflater.decompress(stream, 62980)
+        except zlib.error:
+            continue
+        if (not inflater.eof or inflater.unused_data or len(layout) != 62979 or
+                hashlib.sha256(layout).hexdigest() != MAIN_LAYOUT_SHA256):
+            continue
+        anchor = b'"chatTabAdvertisementPanel.top"'
+        friend_anchor = b'"friendTabAdvertisementPanel.top"'
+        chat_panel = (b'chatTabAdvertisementPanel(AdvertisementPanel) : {\n'
+                      b'                        anchorLeft : "parent.left"\n'
+                      b'                        anchorBottom : "allUnreadsBox.top"')
+        friend_panel = (b'friendTabAdvertisementPanel(AdvertisementPanel) : {\n'
+                        b'                        anchorLeft : "parent.left"\n'
+                        b'                        anchorBottom : "parent.bottom"')
+        if (layout.count(anchor) != 3 or layout.count(friend_anchor) != 1 or
+                layout.count(chat_panel) != 1 or layout.count(friend_panel) != 1):
+            raise ValueError('Unexpected main-list advertisement layout.')
+        modified = layout.replace(anchor, b'"allUnreadsBox.top"')
+        modified = modified.replace(friend_anchor, b'"parent.bottom"')
+        for panel in (chat_panel, friend_panel):
+            modified = modified.replace(panel, panel + b'\n                        bottomMargin : -1000')
+        compressed = zlib.compress(modified, 9)
+        if len(compressed) > len(stream):
+            raise ValueError('Modified layout does not fit in its resource slot.')
+        struct.pack_into('>II', result, pos - 8, len(compressed) + 4, len(modified))
+        result[pos:pos + len(stream)] = compressed + bytes(len(stream) - len(compressed))
+        matches.append(pos)
+    if len(matches) != 2:
+        raise ValueError(f'Expected two audited chat layout resources; found {len(matches)}.')
+    return bytes(result)
+
+
+
 def add_dylib_to_universal(data):
     magic = struct.unpack_from('>I', data, 0)[0]
     if magic == 0xCAFEBABE:
@@ -109,6 +165,10 @@ def parse_args(argv=None):
         '--disable-qt-ad-hiding', action='store_true',
         help='build the stable WebKit-only copy without Qt visibility hooks',
     )
+    parser.add_argument(
+        '--collapse-chat-ad', action='store_true',
+        help='experimentally move audited chat and friends ad areas outside their lists',
+    )
     return parser.parse_args(argv)
 
 
@@ -125,12 +185,15 @@ def main(argv=None):
     info = plistlib.loads(info_path.read_bytes())
     if info.get('CFBundleIdentifier') != 'jp.naver.line.mac':
         raise ValueError('Expected jp.naver.line.mac.')
-    if info.get('CFBundleShortVersionString') != '26.4.2':
-        raise ValueError('This prototype is locked to LINE 26.4.2.')
+    version_build = (info.get('CFBundleShortVersionString'), str(info.get('CFBundleVersion')))
+    if version_build not in {('26.4.2', '3955'), ('26.5.0', '3975')}:
+        raise ValueError('This prototype supports LINE 26.4.2 build 3955 and 26.5.0 build 3975.')
 
     minimum_os = str(info.get('LSMinimumSystemVersion', '14.0'))
     original_binary = binary.read_bytes()
     patched_binary = add_dylib_to_universal(original_binary)
+    if args.collapse_chat_ad:
+        patched_binary = collapse_chat_ad_layout(patched_binary)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, output, symlinks=True)
@@ -139,6 +202,8 @@ def main(argv=None):
     output_info['CFBundleIdentifier'] = args.bundle_identifier
     output_info['CFBundleName'] = 'NEIN'
     output_info['CFBundleDisplayName'] = 'NEIN'
+    if args.collapse_chat_ad:
+        output_info['NEINRuntimeVariant'] = 'main-ad-layout-4'
     output_info_path.write_bytes(plistlib.dumps(output_info, fmt=plistlib.FMT_BINARY))
     output_binary = output / MAIN_BINARY
     output_binary.write_bytes(patched_binary)
@@ -168,9 +233,9 @@ def main(argv=None):
 
     manifest = {
         'status': (
-            'webkit_only_no_qt_hiding'
-            if args.disable_qt_ad_hiding
-            else 'experimental_qt_qml_ad_hiding'
+            'experimental_main_ad_layout' if args.collapse_chat_ad else
+            'webkit_only_no_qt_hiding' if args.disable_qt_ad_hiding else
+            'experimental_qt_qml_ad_hiding'
         ),
         'source_app': str(source),
         'output_app': str(output),
@@ -185,9 +250,11 @@ def main(argv=None):
         'dns_blocking': False,
         'qt_ad_hiding': not args.disable_qt_ad_hiding,
         'qt_widgets_ad_hiding': False,
+        'collapse_chat_ad': args.collapse_chat_ad,
         'signing_identity': 'ad-hoc' if args.signing_identity == '-' else args.signing_identity,
         'blocked_domains': BLOCKED_DOMAINS,
         'limitations': [
+            'The experimental ad layout is unverified when ad content is present.' if args.collapse_chat_ad else
             'The stable profile does not hide native Qt/QML or Qt Widgets ad panels.',
             'Real LINE login, chat, media and advertisement behavior require device testing.',
             'The app is not notarized for App Store distribution.',

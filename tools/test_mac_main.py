@@ -1,11 +1,43 @@
 import struct
+import hashlib
 import unittest
+from unittest import mock
+import zlib
 
 import mac_main
 import macho
 
 
 class MacMainTests(unittest.TestCase):
+    def test_collapses_only_audited_chat_layout_in_both_slices(self):
+        anchor = b'"chatTabAdvertisementPanel.top"'
+        panel = (b'chatTabAdvertisementPanel(AdvertisementPanel) : {\n'
+                 b'                        anchorLeft : "parent.left"\n'
+                 b'                        anchorBottom : "allUnreadsBox.top"')
+        friend = (b'friendTabAdvertisementPanel(AdvertisementPanel) : {\n'
+                  b'                        anchorLeft : "parent.left"\n'
+                  b'                        anchorBottom : "parent.bottom"')
+        layout = ((anchor + b'\n') * 3 + panel + friend +
+                  b'"friendTabAdvertisementPanel.top"' + b'"allUnreadsBox.top"' * 20 +
+                  b'"parent.bottom"' * 20 + b'\n                        bottomMargin : -1000' * 20)
+        layout += b' ' * (62979 - len(layout))
+        compressed = zlib.compress(layout, 9)
+        resource = struct.pack('>II', len(compressed) + 4, len(layout)) + compressed
+        data = b'prefix' + resource + b'middle' + resource + b'suffix'
+        with mock.patch.object(mac_main, 'MAIN_LAYOUT_SHA256', hashlib.sha256(layout).hexdigest()):
+            result = mac_main.collapse_chat_ad_layout(data)
+            with self.assertRaises(ValueError):
+                mac_main.collapse_chat_ad_layout(b'prefix' + resource)
+        self.assertEqual(len(data), len(result))
+        pos = result.index(b'\x78\xda')
+        size = struct.unpack_from('>I', result, pos - 8)[0]
+        patched = zlib.decompress(result[pos:pos - 4 + size])
+        self.assertEqual(patched.count(b'"allUnreadsBox.top"'), 24)
+        self.assertNotIn(anchor, patched)
+        self.assertIn(panel + b'\n                        bottomMargin : -1000', patched)
+        self.assertIn(friend + b'\n                        bottomMargin : -1000', patched)
+        self.assertNotIn(b'"friendTabAdvertisementPanel.top"', patched)
+
     def make_slice(self, command_count=1, command_size=152, section_offset=512):
         data = bytearray(1024)
         struct.pack_into('<I', data, 0, 0xFEEDFACF)
