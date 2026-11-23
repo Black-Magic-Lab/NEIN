@@ -98,6 +98,10 @@ static void NEINRunHomeSettingsTests(void) {
         assert(![tabs respondsToSelector:NEINDuoOpenSettingsSelector()]);
 
         assert(NEINInstallDuoHomeSettings());
+        Class login = objc_allocateClassPair(UIViewController.class, "LineSecondaryLoginUI.NEINTestLogin", 0);
+        objc_registerClassPair(login);
+        assert([[login new] preferredVerticalBarBehavior] == UIVerticalBarBehaviorDisabled);
+        assert([[UIViewController new] preferredVerticalBarBehavior] == UIVerticalBarBehaviorAutomatic);
         [tabs viewDidLayoutSubviews];
         UIBarButtonItemGroup *group = item.pinnedTrailingGroup;
         assert(group.barButtonItems.count == 1 && !group.representativeItem);
@@ -274,9 +278,21 @@ static void NEINRunHomeSettingsTests(void) {
         detail.navigationBarHidden = YES;
         [detail viewDidLayoutSubviews];
         NSArray<UIBarButtonItem *> *roomItems = room.navigationItem.pinnedTrailingGroup.barButtonItems;
-        assert(roomItems.count == 2);
-        assert([roomItems[0].accessibilityLabel isEqualToString:@"搜尋"]);
-        assert([roomItems[1].accessibilityLabel isEqualToString:@"通話"]);
+        assert(roomItems.count == 2 && !roomItems[0].menu);
+        // With the keyboard up they share one "more" button beside the system back button.
+        [NSNotificationCenter.defaultCenter postNotificationName:UIKeyboardWillShowNotification object:nil];
+        [detail viewDidLayoutSubviews];
+        roomItems = room.navigationItem.pinnedTrailingGroup.barButtonItems;
+        assert(roomItems.count == 1 && roomItems[0].menu);
+        assert([roomItems[0].accessibilityIdentifier isEqualToString:@"nein.duo.line.more"]);
+        NSArray<UIBarButtonItem *> *moreItems = objc_getAssociatedObject(roomItems[0], &NEINDuoMoreSourcesKey);
+        assert(moreItems.count == 2);
+        assert([moreItems[0].accessibilityLabel isEqualToString:@"搜尋"]);
+        assert([moreItems[1].accessibilityLabel isEqualToString:@"通話"]);
+        [NSNotificationCenter.defaultCenter postNotificationName:UIKeyboardWillHideNotification object:nil];
+        [detail viewDidLayoutSubviews];
+        roomItems = room.navigationItem.pinnedTrailingGroup.barButtonItems;
+        assert(roomItems.count == 2 && roomItems[0] == moreItems[0] && roomItems[1] == moreItems[1]);
         assert(roomButtons[0].alpha == 0 && roomButtons[1].alpha == 0);
         assert(!detail.navigationBarHidden && back.hidden);
         assert(room.toolbarItems.count == 2 && chat.toolbarItems.count == 2);

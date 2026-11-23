@@ -720,6 +720,47 @@ static NSArray<UIBarButtonItem *> *NEINDuoPageOwnButtons(UIViewController *page,
     return @[];
 }
 
+static char NEINDuoMoreItemKey;
+static char NEINDuoMoreSourcesKey;
+static BOOL NEINDuoKeyboardShown;
+
+// With the keyboard up, a chat room's buttons overflow the shortened vertical
+// bar beside the back button, so they share one "more" button whose menu runs
+// them; the menu is built on opening, from the buttons of the latest pass.
+static UIBarButtonItem *NEINDuoChatMoreItem(UIViewController *page, NSArray<UIBarButtonItem *> *items) {
+    UIBarButtonItem *more = objc_getAssociatedObject(page, &NEINDuoMoreItemKey);
+    if (!more) {
+        more = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis"] menu:nil];
+        more.accessibilityIdentifier = [NEINDuoMirrorIdentifier stringByAppendingString:@".more"];
+        __weak UIBarButtonItem *weakMore = more;
+        more.menu = [UIMenu menuWithChildren:@[[UIDeferredMenuElement elementWithUncachedProvider:
+            ^(void (^completion)(NSArray<UIMenuElement *> *)) {
+                NSMutableArray<UIMenuElement *> *actions = [NSMutableArray new];
+                for (UIBarButtonItem *item in objc_getAssociatedObject(weakMore, &NEINDuoMoreSourcesKey)) {
+                    NEINDuoMirrorTarget *target = objc_getAssociatedObject(item, &NEINDuoMirrorTargetKey);
+                    // LINE draws its icons white for its own bar; the vertical bar tints them as
+                    // templates, and the menu needs the same to match.
+                    UIImage *image = [item.image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+                    UIAction *action = [UIAction actionWithTitle:item.title ?: @"" image:image identifier:nil
+                                                         handler:^(UIAction *sender) {
+                        (void)sender;
+                        if (target.source) {
+                            [target.source sendActionsForControlEvents:UIControlEventTouchUpInside];
+                        } else {
+                            [target.presented dismissViewControllerAnimated:YES completion:nil];
+                        }
+                    }];
+                    if (!item.enabled) action.attributes = UIMenuElementAttributesDisabled;
+                    [actions addObject:action];
+                }
+                completion(actions);
+            }]]];
+        objc_setAssociatedObject(page, &NEINDuoMoreItemKey, more, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    objc_setAssociatedObject(more, &NEINDuoMoreSourcesKey, items, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return more;
+}
+
 // LINE's buttons on one page, faded or hidden in place once mirrored; a pushed
 // page's own back button gives way to the system one.
 static NSArray<UIBarButtonItem *> *NEINDuoPageButtons(UIViewController *page, BOOL inDetail) {
@@ -732,6 +773,9 @@ static NSArray<UIBarButtonItem *> *NEINDuoPageButtons(UIViewController *page, BO
     // the one LINE adds once the split folds would sit in a top bar of its own.
     BOOL pushed = navigation && navigation.viewControllers.firstObject != page;
     UIView *chatBar = pushed || inDetail ? chatBars.firstObject : nil;
+    if (chatBar && NEINDuoBarShown && NEINDuoKeyboardShown && own.count > 1) {
+        own = @[NEINDuoChatMoreItem(page, own)];
+    }
     NSMutableArray<UIView *> *contents = [NSMutableArray new];
     if (chatBar) NEINDuoFindClass(chatBar, @"ChatNavigationBarContentView", contents);
     UIView *content = NEINDuoBarShown ? contents.firstObject : nil;
@@ -1520,8 +1564,39 @@ static void NEINDuoSafeAreaDidChange(UIViewController *self, SEL selector) {
     if (objc_getAssociatedObject(self, &NEINDuoChatInsetsKey)) NEINDuoQueueRefresh();
 }
 
+static NSInteger (*NEINDuoOriginalVerticalBarBehavior)(id, SEL);
+
+// LINE's login flow shows no bar items, so the vertical bar there would only
+// reserve an empty strip at the trailing edge.
+static UIVerticalBarBehavior NEINDuoVerticalBarBehavior(UIViewController *self, SEL selector) {
+    NSString *name = NSStringFromClass(self.class);
+    for (NSString *module in @[@"LineSecondaryLoginUI.", @"LineAccountAuthenticationUICore.",
+                               @"LineRegistrationUI."]) {
+        if ([name hasPrefix:module]) return UIVerticalBarBehaviorDisabled;
+    }
+    return NEINDuoOriginalVerticalBarBehavior(self, selector);
+}
+
 // The hooks only the system vertical bar needs; each one degrades on its own.
 static void NEINDuoInstallVerticalBarHooks(void) {
+    if (!NEINHookOwnMethod(UIViewController.class, @selector(preferredVerticalBarBehavior),
+                           @encode(NSInteger), 2, NULL, NULL, (IMP)NEINDuoVerticalBarBehavior,
+                           (IMP *)&NEINDuoOriginalVerticalBarBehavior)) {
+        NSLog(@"[NEINIPhoneDuo] Vertical bar behavior unavailable; login keeps the bar's strip.");
+    }
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    [center addObserverForName:UIKeyboardWillShowNotification object:nil queue:nil
+                    usingBlock:^(NSNotification *note) {
+        (void)note;
+        NEINDuoKeyboardShown = YES;
+        NEINDuoQueueRefresh();
+    }];
+    [center addObserverForName:UIKeyboardWillHideNotification object:nil queue:nil
+                    usingBlock:^(NSNotification *note) {
+        (void)note;
+        NEINDuoKeyboardShown = NO;
+        NEINDuoQueueRefresh();
+    }];
     if (!NEINHookOwnMethod(UINavigationController.class, @selector(viewDidLayoutSubviews),
                            "v", 2, NULL, NULL, (IMP)NEINDuoNavigationDidLayoutSubviews,
                            (IMP *)&NEINDuoOriginalNavigationLayout)) {
