@@ -455,8 +455,8 @@ def login_patch_section(result):
 
 
 KEYCHAIN_PROFILE_SCHEMA_VERSION = 1
-REFERENCE_VERSION = '26.14.0'
-REFERENCE_UUID = '0bab483cca8538ce89840c20c92511e4'
+REFERENCE_VERSION = '26.17.0'
+REFERENCE_UUID = '614ced5907e5372d94b2d4901870c7a0'
 
 OPERATIONS = {
     'add': '_SecItemAdd',
@@ -470,11 +470,11 @@ AUTHENTICATION_METHODS = {
     'deleteFromKeychainWithQuery:': ('delete', 'delete'),
 }
 
-# These are used only to bootstrap the checked-in 26.14.0 reference signatures.
+# These are used only to bootstrap the checked-in 26.17.0 reference signatures.
 REFERENCE_FUNCTION_RANGES = (
-    (0x3d63390, 0x3d636fc, ('copy',)),
-    (0x3d638b4, 0x3d63b4c, ('delete',)),
-    (0x3d63b4c, 0x3d64078, ('update', 'add')),
+    (0x40d511c, 0x40d53ac, ('copy',)),
+    (0x40d5798, 0x40d595c, ('delete',)),
+    (0x40d53ac, 0x40d5798, ('update', 'add')),
 )
 MIN_E2EE_MATCH_SCORE = 0.70
 MIN_E2EE_MATCH_MARGIN = 0.15
@@ -809,7 +809,7 @@ def analyze_keychain_executable(executable, version, build, reference_profile=No
     else:
         if reference_profile is None:
             raise ValueError(
-                'No 26.14.0 E2EE reference profile is available for this build.'
+                f'No {REFERENCE_VERSION} E2EE reference profile is available for this build.'
             )
         anchors = reference_profile.get('e2ee_reference_signatures')
         if not isinstance(anchors, list) or len(anchors) != len(REFERENCE_FUNCTION_RANGES):
