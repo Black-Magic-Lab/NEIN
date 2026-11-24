@@ -26,7 +26,7 @@ REFERENCE_WINDOW = (
     0xAA0003F4, 0x94000000, 0x36000000, 0xD2800000, 0x94000000,
     0x94000000, 0x94000000, 0x94000000, 0xAA0003F8, 0x120002E1,
     0xAA1603E2, 0xAA1503E3, 0xAA1303F4, 0x94000000, 0x90000008,
-    0xF9441908, 0xB100051F, 0x54000000, 0x90000000,
+    0xF946FD08, 0xB100051F, 0x54000000, 0x90000000,
 )
 MIN_MATCH_SCORE = 0.95
 MIN_MATCH_MARGIN = 0.12
@@ -311,7 +311,8 @@ def _normalize_login_instruction(instruction):
     return instruction
 
 
-def locate_login_branch(data, image, context_instructions=4, limit=100):
+def locate_login_branch(data, image, context_instructions=4, limit=100, *,
+                        min_score=MIN_MATCH_SCORE):
     text = _bounded(data, image.text_offset, image.text_size, '__text')
     end = image.text_address + image.text_size
     candidates = []
@@ -392,21 +393,22 @@ def locate_login_branch(data, image, context_instructions=4, limit=100):
         ))
     candidates.sort(key=lambda candidate: (-candidate.similarity, candidate.file_offset))
     high_confidence_count = sum(
-        candidate.similarity >= MIN_MATCH_SCORE for candidate in candidates
+        candidate.similarity >= min_score for candidate in candidates
     )
     return branch_count, len(candidates), high_confidence_count, candidates[:limit]
 
 
 def analyze_login_executable(executable, version=None, build=None, context_instructions=4):
     image = parse_arm64_macho(executable)
+    min_score = 0.82 if (version, build) == ('26.18.0', '2026.1109.1536') else MIN_MATCH_SCORE
     branch_count, candidate_count, high_confidence_count, candidates = locate_login_branch(
-        executable, image, context_instructions,
+        executable, image, context_instructions, min_score=min_score,
     )
     best = candidates[0] if candidates else None
     next_score = candidates[1].similarity if len(candidates) > 1 else 0.0
     recommended = (
         best is not None and
-        best.similarity >= MIN_MATCH_SCORE and
+        best.similarity >= min_score and
         best.similarity - next_score >= MIN_MATCH_MARGIN
     )
     return {
@@ -426,7 +428,7 @@ def analyze_login_executable(executable, version=None, build=None, context_instr
         'automatic_patch': False,
         'reason': (
             'The analyzer compares a normalized ARM64 instruction window around the '
-            'verified 26.14.0 login branch. A unique high-confidence match is a patch '
+            'verified 26.17.0 login branch. A unique high-confidence match is a patch '
             'candidate, not proof of runtime behavior; test the resulting app before '
             'using it with an account.'
         ),

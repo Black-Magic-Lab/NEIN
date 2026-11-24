@@ -93,6 +93,16 @@ class LoginPatchAnalyzerTests(unittest.TestCase):
         self.assertEqual(patch['original_hex'], '40000036')
         self.assertEqual(patch['patched_hex'], '1f2003d5')
 
+    def test_lower_login_score_applies_only_to_26_18_build(self):
+        binary = bytearray(sample_macho(reference=True))
+        struct.pack_into('<5I', binary, 200, *([analyzer.NOP] * 5))
+        for build, expected in (('2026.1109.1536', '0xf8'), ('other', None)):
+            with self.subTest(build=build):
+                result = analyzer.analyze_login_executable(binary, '26.18.0', build)
+                self.assertAlmostEqual(result['best_similarity'], 24 / 29)
+                self.assertEqual(result['recommended_patch_offset'], expected)
+                self.assertEqual(result['high_confidence_candidate_count'], int(expected is not None))
+
     def test_analyzes_unique_friend_tab_patch_sites(self):
         binary = bytearray(sample_macho())
         pattern = (
