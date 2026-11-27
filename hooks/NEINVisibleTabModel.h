@@ -3,7 +3,7 @@
 #include "NEINLineStrings.h"
 
 static BOOL NEINIsPromotionalTabItem(UITabBarItem *item) {
-    // LINE 26.14.0 includes this specific item class. Do not match generic
+    // LINE ships this specific item class for VOOM. Do not match generic
     // TabBar/TabItem names or infer item identity from view positions.
     return NEINIsPromotionalTabTitle(item.title) ||
            [NSStringFromClass(item.class) hasSuffix:@"VOOMSkinnedTabBarItem"];

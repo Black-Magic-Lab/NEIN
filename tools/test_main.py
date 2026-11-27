@@ -186,7 +186,9 @@ class MainToolTests(unittest.TestCase):
             'liff_route': site(0x194, '96000037', '1f2003d5'),
             'native_routes': {**site(0x198, '15030036', '2a000014'),
                               'code_cave': site(0x140, '00' * 8, 'aa' * 8)},
-            'coin_entry': site(0x19c, '60008052', '00008052'),
+            # 26.19.0 has one coin resume function per side effect.
+            'coin_entry': {**site(0x19c, '60008052', '00008052'),
+                           'additional_sites': [site(0x1b0, '60008052', '00008052')]},
         }
         original = bytes(original)
         profile = self.profile(original, home_friends=friends, sticker_shop=sticker_shop)
@@ -207,7 +209,7 @@ class MainToolTests(unittest.TestCase):
                          'No theme-shop patch for this build; theme shop skipped.')
         self.assertEqual(manifest['home_friends'], friends)
         self.assertEqual(manifest['sticker_shop']['native_routes'], sticker_shop['native_routes'])
-        for offset in ('0x140', '0x180', '0x188', '0x190', '0x194', '0x198', '0x19c'):
+        for offset in ('0x140', '0x180', '0x188', '0x190', '0x194', '0x198', '0x19c', '0x1b0'):
             self.assertIn(offset, manifest['changed_byte_offsets'])
 
     def test_entry_only_theme_shop_replaces_the_sticker_code_cave(self):
@@ -614,7 +616,7 @@ class MainToolTests(unittest.TestCase):
         self.assertIn('line://nv/settings', section['home_settings_hook'])
         self.assertIn('setViewControllers:animated:', section['tab_removal_hook'])
         self.assertEqual(section['split_layout']['minimum_window_short_side_points'], 600)
-        self.assertIn('LineCameraSubsystem.CameraView', section['camera_layout_hook'])
+        self.assertNotIn('camera_layout_hook', section)
 
     def test_skin_default_json_prefixes_only_shipped_images(self):
         source_id = '00000000-0000-0000-0000-000000000002'

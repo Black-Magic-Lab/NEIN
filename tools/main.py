@@ -51,6 +51,9 @@ DEFAULT_ICON = 'design_simple_banana'
 AD_DOMAIN_LIST = ROOT / 'ad_domains.txt'
 LC_BUILD_VERSION = 0x32
 PLATFORM_IOS = 2
+# The iOS 27.1 SDK mark turns on iPhone Duo's system vertical bar (side
+# buttons). LINE 26.19.0 already links the 27.0 SDK, so it fills the Duo
+# displays on its own, but it still needs the mark for the vertical bar.
 IPHONE_DUO_SDK = (27, 1, 0)
 # hooks/NEINDuoSplitLayout.h enforces the same model and threshold (points).
 IPHONE_DUO_MODEL = 'iPhone19,4'
@@ -361,7 +364,7 @@ def parse_args(argv=None):
     parser.add_argument('--keychain-compat', action='store_true',
                         help='Audited E2EE/authentication missing-entitlement retry with default Keychain group; includes diagnostics')
     parser.add_argument('--remove-ads', action='store_true',
-                        help='Block audited ad domains and disable known ad views (verified on 26.14.0; experimental on 26.15.1)')
+                        help='Block audited ad domains and disable known ad views')
     parser.add_argument('--collapse-friends-on-launch', action='store_true',
                         help='Initialize the Friends section as collapsed')
     parser.add_argument('--skin-theme', metavar='TARGET_UUID=SOURCE_UUID',
@@ -420,7 +423,9 @@ def main():
             native = shop['native_routes']
             # Both shops share one code cave, so the theme variant replaces its code.
             cave = theme['code_cave'] if theme else native['code_cave']
-            patch_sites += [shop, shop['liff_route'], native, cave, shop['coin_entry']]
+            coin = shop['coin_entry']
+            patch_sites += [shop, shop['liff_route'], native, cave, coin,
+                            *coin.get('additional_sites', ())]
             if theme:
                 patch_sites += [theme, theme['liff_route']]
         output_info = patched_info_plist(
@@ -610,7 +615,6 @@ def main():
             },
             'home_settings_hook': 'Home settings gear opens line://nv/settings; '
                                   'LINE buttons are mirrored into the vertical bar.',
-            'camera_layout_hook': 'LineCameraSubsystem.CameraView and YukiCameraView fit the window.',
         }
     # Every dylib hides VOOM, News, Shopping and Discover; only --entry-only has none.
     if not args.entry_only:

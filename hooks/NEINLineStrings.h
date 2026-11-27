@@ -35,7 +35,7 @@ static inline BOOL NEINIsCallTabTitle(NSString *title) {
         @[@"CALL", @"CALLS", @"通話", @"통화"]);
 }
 
-// 逛逛/Discover is the LINE 26.17.0 TW commerce tab ("tw.commerce.gnb").
+// 逛逛/Discover is LINE's TW commerce tab ("tw.commerce.gnb").
 static inline BOOL NEINIsPromotionalTabTitle(NSString *title) {
     return NEINTabTitleIsOneOf(title,
         @[@"VOOM", @"LINE VOOM", @"NEWS", @"LINE NEWS",

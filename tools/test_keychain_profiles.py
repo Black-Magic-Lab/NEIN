@@ -55,8 +55,8 @@ def sample_profile(version, uuid, got_address, got_offset, auth_offset, e2ee_off
 
 
 class KeychainProfileTests(unittest.TestCase):
-    def test_uses_checked_in_26_17_e2ee_reference(self):
-        path = ROOT / 'patch_profiles' / '26.17.0-2026.1103.1841-a3de1677f314.json'
+    def test_uses_checked_in_26_19_e2ee_reference(self):
+        path = ROOT / 'patch_profiles' / '26.19.0-2026.1123.1648-c8d6115dfdb5.json'
         keychain = json.loads(path.read_text(encoding='utf-8'))['keychain']
         reference = analyzer._reference_profile(path.parent)
 

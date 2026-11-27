@@ -20,13 +20,14 @@ NOP = 0xD503201F
 REFERENCE_BRANCH_INDEX = 12
 REFERENCE_WINDOW_START = -12
 REFERENCE_WINDOW_END = 17
+# Normalized window around the verified 26.19.0 secondary login branch.
 REFERENCE_WINDOW = (
-    0xA90457F6, 0xA9054FF4, 0xA9067BFD, 0x910183FD, 0xAA1403F3,
+    0xA90557F6, 0xA9064FF4, 0xA9077BFD, 0x9101C3FD, 0xAA1403F3,
     0xAA0203F5, 0xAA0103F6, 0xAA0003F7, 0xD2800000, 0x94000000,
     0xAA0003F4, 0x94000000, 0x36000000, 0xD2800000, 0x94000000,
     0x94000000, 0x94000000, 0x94000000, 0xAA0003F8, 0x120002E1,
     0xAA1603E2, 0xAA1503E3, 0xAA1303F4, 0x94000000, 0x90000008,
-    0xF946FD08, 0xB100051F, 0x54000000, 0x90000000,
+    0xF9473D08, 0xB100051F, 0x54000000, 0x90000000,
 )
 MIN_MATCH_SCORE = 0.95
 MIN_MATCH_MARGIN = 0.12
@@ -311,8 +312,7 @@ def _normalize_login_instruction(instruction):
     return instruction
 
 
-def locate_login_branch(data, image, context_instructions=4, limit=100, *,
-                        min_score=MIN_MATCH_SCORE):
+def locate_login_branch(data, image, context_instructions=4, limit=100):
     text = _bounded(data, image.text_offset, image.text_size, '__text')
     end = image.text_address + image.text_size
     candidates = []
@@ -393,22 +393,21 @@ def locate_login_branch(data, image, context_instructions=4, limit=100, *,
         ))
     candidates.sort(key=lambda candidate: (-candidate.similarity, candidate.file_offset))
     high_confidence_count = sum(
-        candidate.similarity >= min_score for candidate in candidates
+        candidate.similarity >= MIN_MATCH_SCORE for candidate in candidates
     )
     return branch_count, len(candidates), high_confidence_count, candidates[:limit]
 
 
 def analyze_login_executable(executable, version=None, build=None, context_instructions=4):
     image = parse_arm64_macho(executable)
-    min_score = 0.82 if (version, build) == ('26.18.0', '2026.1109.1536') else MIN_MATCH_SCORE
     branch_count, candidate_count, high_confidence_count, candidates = locate_login_branch(
-        executable, image, context_instructions, min_score=min_score,
+        executable, image, context_instructions,
     )
     best = candidates[0] if candidates else None
     next_score = candidates[1].similarity if len(candidates) > 1 else 0.0
     recommended = (
         best is not None and
-        best.similarity >= min_score and
+        best.similarity >= MIN_MATCH_SCORE and
         best.similarity - next_score >= MIN_MATCH_MARGIN
     )
     return {
@@ -428,7 +427,7 @@ def analyze_login_executable(executable, version=None, build=None, context_instr
         'automatic_patch': False,
         'reason': (
             'The analyzer compares a normalized ARM64 instruction window around the '
-            'verified 26.17.0 login branch. A unique high-confidence match is a patch '
+            'verified 26.19.0 login branch. A unique high-confidence match is a patch '
             'candidate, not proof of runtime behavior; test the resulting app before '
             'using it with an account.'
         ),
@@ -457,8 +456,8 @@ def login_patch_section(result):
 
 
 KEYCHAIN_PROFILE_SCHEMA_VERSION = 1
-REFERENCE_VERSION = '26.17.0'
-REFERENCE_UUID = '614ced5907e5372d94b2d4901870c7a0'
+REFERENCE_VERSION = '26.19.0'
+REFERENCE_UUID = '1288a01793c23170aec773cc4e01ae7c'
 
 OPERATIONS = {
     'add': '_SecItemAdd',
@@ -472,11 +471,11 @@ AUTHENTICATION_METHODS = {
     'deleteFromKeychainWithQuery:': ('delete', 'delete'),
 }
 
-# These are used only to bootstrap the checked-in 26.17.0 reference signatures.
+# These are used only to bootstrap the checked-in 26.19.0 reference signatures.
 REFERENCE_FUNCTION_RANGES = (
-    (0x40d511c, 0x40d53ac, ('copy',)),
-    (0x40d5798, 0x40d595c, ('delete',)),
-    (0x40d53ac, 0x40d5798, ('update', 'add')),
+    (0x440a6f4, 0x440a984, ('copy',)),
+    (0x440ad74, 0x440af38, ('delete',)),
+    (0x440a984, 0x440ad74, ('update', 'add')),
 )
 MIN_E2EE_MATCH_SCORE = 0.70
 MIN_E2EE_MATCH_MARGIN = 0.15
@@ -977,9 +976,10 @@ PROFILE_DIR = ROOT / 'patch_profiles'
 PROFILE_SCHEMA_VERSION = 2
 BUNDLE_IDENTIFIER = 'jp.naver.line'
 PROFILE_TYPE = 'line_patch'
-FRIEND_TAB_CASE_COMPARE = 0x7100173F
-FRIEND_TAB_CASE_RESULT = 0x1A9F17E8
-FRIEND_TAB_CASE_COLLAPSED = 0x52800008
+FRIEND_TAB_CASE_RESULT = 0x1A9F17E8  # cset w8, eq
+FRIEND_TAB_CASE_COLLAPSED = 0x52800008  # mov w8, #0
+# isSectionExpanded is stored inline: ldr x9, [x19, #0x38]; strb w8, [x9, x24].
+FRIEND_TAB_INLINE_STORE = (0xF9401E69, 0x38386928)
 
 
 def profile_path_for(version, build, executable_sha256, profile_dir=PROFILE_DIR):
@@ -1121,6 +1121,7 @@ def _validate_login_section(profile, executable):
 
 
 def analyze_friend_tab_executable(executable):
+    """Locate the two `isSectionExpanded = section == .friends` stores."""
     image = parse_arm64_macho(executable)
     text = _bounded(
         executable, image.text_offset, image.text_size, '__text',
@@ -1130,10 +1131,7 @@ def analyze_friend_tab_executable(executable):
     cursor = text.find(result_instruction)
     while cursor >= 0:
         start = cursor - 4
-        if cursor % 4 == 0 and 0 <= start <= len(text) - 24:
-            instructions = struct.unpack_from('<6I', text, start)
-            call = instructions[2] & 0xFC000000
-            branch = instructions[3] & 0xFC000000
+        if cursor % 4 == 0 and 0 <= start <= len(text) - 4 * 19:
             address = image.text_address + start
             function_index = bisect.bisect_right(
                 image.function_starts, address,
@@ -1143,17 +1141,21 @@ def analyze_friend_tab_executable(executable):
                 if function_index + 1 < len(image.function_starts)
                 else image.text_address + image.text_size
             )
+            words = struct.unpack_from('<19I', text, start)
+            # cmp w<section>, #5; cset w8, eq; <store>; bl; b; then the same
+            # compare and cset on the other path, whose store follows 11 words later.
             if (
-                instructions[0] == FRIEND_TAB_CASE_COMPARE and
-                instructions[1] == FRIEND_TAB_CASE_RESULT and
-                call == 0x94000000 and branch == 0x14000000 and
-                instructions[4] == FRIEND_TAB_CASE_COMPARE and
-                instructions[5] == FRIEND_TAB_CASE_RESULT and
-                address >= image.function_starts[function_index] and
-                address + 24 <= function_end
+                address + 4 * 19 <= function_end and
+                words[0] & 0xFFFFFC1F == 0x7100141F and
+                words[1] == FRIEND_TAB_CASE_RESULT and
+                words[2:4] == FRIEND_TAB_INLINE_STORE and
+                words[4] & 0xFC000000 == 0x94000000 and
+                words[5] & 0xFC000000 == 0x14000000 and
+                words[6:8] == words[0:2] and
+                words[17:19] == FRIEND_TAB_INLINE_STORE
             ):
                 first_offset = image.text_offset + start + 4
-                matches.append((first_offset, first_offset + 16))
+                matches.append((first_offset, first_offset + 24))
         cursor = text.find(result_instruction, cursor + 1)
 
     if len(matches) != 1:
@@ -1272,22 +1274,31 @@ def _analyze_native_sticker_routes(executable, image, liff_route):
         if len(candidates) != 1:
             return None
         site = candidates[0]
-        signature = _words(image, site, 16)
+        signature = _words(image, site, 14)
+        # The route lookup is outlined: one call loads the route closure
+        # (ldp x21, x20, [x20]) and one keeps its result in x21 for the guard.
         if (
-            signature[1] != 0x360003A0 or
-            signature[4] != 0x9102C2C1 or
-            signature[6] != 0xA9405295 or
-            signature[8:10] != (0xD63F02A0, 0xAA0003F5) or
-            signature[11:14] != (0x36000315, 0xF94072D4, 0xAA1303E0) or
-            signature[15] != 0x36000420
+            signature[1] & 0xFFF8001F != 0x36000000 or
+            signature[4] & 0xFFC003FF != 0x910002C1 or
+            signature[5] & 0xFC000000 != 0x94000000 or
+            _words(image, _call_target(image, site + 24), 1) != (0xA9405295,) or
+            signature[7] != 0xD63F02A0 or
+            _words(image, _call_target(image, site + 32), 1) != (0xAA0003F5,) or
+            signature[9] & 0xFFF8001F != 0x36000015 or
+            signature[10] & 0xFFC003FF != 0xF94002D4 or
+            signature[11] != 0xAA1303E0 or
+            signature[13] & 0xFFF8001F != 0x36000000
         ):
             return None
-        helper = _call_target(image, site + 56)
+        guard = site + 36
+        guard_word = signature[9]
+        helper = _call_target(image, guard + 12)
         helper_words = _words(image, helper + 56, 7)
         if (
             helper_words[0] != 0xAA1303E0 or
             helper_words[2:4] != (0x12001C16, 0xAA1303E0) or
-            helper_words[5:7] != (0x35000476, 0x12001C08)
+            helper_words[5] & 0xFF00001F != 0x35000016 or
+            helper_words[6] != 0x12001C08
         ):
             return None
         kind = _call_target(image, helper + 60)
@@ -1316,8 +1327,8 @@ def _analyze_native_sticker_routes(executable, image, liff_route):
             any(_bounded(executable, cave_offset, 0x100, 'shop code cave'))
         ):
             return None
-        guard = site + 44
-        deny = guard + 0x60
+        # The guard's own branch (tbz w21, #0) is the original deny path.
+        deny = _decode_branch(guard_word, guard)[1]
         native = {
             'kind': 'native_sticker_routes',
             'guard_address': hex(guard),
@@ -1325,7 +1336,7 @@ def _analyze_native_sticker_routes(executable, image, liff_route):
             'kind_resolver_address': hex(kind),
             'command_resolver_address': hex(command),
             'file_offset': hex(image.file_offset(guard)),
-            'original_hex': '15030036',
+            'original_hex': struct.pack('<I', guard_word).hex(),
             'patched_hex': struct.pack('<I', _branch26(guard, cave_address)).hex(),
             'code_cave': {'address': hex(cave_address), 'file_offset': hex(cave_offset)},
         }
@@ -1336,132 +1347,274 @@ def _analyze_native_sticker_routes(executable, image, liff_route):
         return None
 
 
+STICKER_LIFF_ID = '1359301715-JKd7Y7j1'
+THEME_LIFF_ID = '1359301715-lw9jxjqV'
+
+
+def _swift_string(low, high, image):
+    if high >> 60 == 0xE:  # small string stored inline
+        count = (high >> 56) & 0xF
+        return struct.pack('<QQ', low, high & 0x00FFFFFFFFFFFFFF)[:count].decode()
+    if low >> 48 == 0xD000:  # immortal native string in __cstring
+        value = _cstring(_decode_image_pointer(high, image) + 32, image)
+        if len(value) != low & 0xFFFFFFFFFFFF:
+            raise ValueError('Swift string length mismatch.')
+        return value
+    raise ValueError('Unsupported Swift string literal.')
+
+
+def _swift_string_array(address, image):
+    offset = image.file_offset(address)
+    count, capacity = struct.unpack('<QQ', _bounded(image.data, offset + 16, 16, 'Swift array'))
+    if not 0 < count <= 8 or capacity >> 1 < count:
+        raise ValueError('Unexpected Swift array literal.')
+    return [
+        _swift_string(*struct.unpack('<QQ', _bounded(
+            image.data, offset + 32 + index * 16, 16, 'Swift array element',
+        )), image)
+        for index in range(count)
+    ]
+
+
 def _analyze_sticker_liff_route(executable, image):
-    signature = bytes.fromhex('9600003777000037160080520b000014')
+    """Three path-prefix checks share one helper.
+
+    The matcher returns (prefix ['app', sticker] or ['app', theme]) and not the
+    secondary-device check, or prefix ['shop']; the first guard is sticker-only.
+    """
     text = _bounded(executable, image.text_offset, image.text_size, '__text')
-    cursor = text.find(signature)
-    if cursor < 0 or cursor % 4 or text.find(signature, cursor + 1) >= 0:
+    theme_guard = struct.pack('<I', 0x37000060)  # tbnz w0, #0, +0xc
+    matches = []
+    cursor = text.find(theme_guard)
+    while cursor >= 0:
+        if cursor % 4 == 0 and 4 <= cursor <= len(text) - 12:
+            sticker, _, result, skip = struct.unpack_from('<4I', text, cursor - 4)
+            if (
+                sticker & 0xFFFFFFE0 == 0x37000080 and sticker & 0x1F not in (0, 31) and
+                result & 0xFFFFFFE0 == 0x52800000 and skip & 0xFC000000 == 0x14000000
+            ):
+                matches.append(cursor - 4)
+        cursor = text.find(theme_guard, cursor + 1)
+    if len(matches) != 1:
         return None
-    offset = image.text_offset + cursor
-    address = image.text_address + cursor
+    offset = image.text_offset + matches[0]
+    address = image.text_address + matches[0]
+    sticker_guard, _, result, _ = _words(image, address, 4)
+    sticker_register = sticker_guard & 0x1F
+    result_register = result & 0x1F
     start, end = _function_bounds(address, image)
-    if address - 136 < start or address + 132 > end:
+    if address - 60 < start or address + 72 > end:
         return None
 
-    def page_address(at, register):
+    def array_at(at):
         adrp, add = _words(image, at, 2)
-        if (
-            adrp & 0x9F00001F != 0x90000000 | register or
-            add & 0xFFC003FF != 0x91000000 | register << 5 | register
-        ):
-            raise ValueError('Expected shop matcher address.')
-        return _adrp_add_target(at, adrp, add)
+        if adrp & 0x9F00001F != 0x90000000 or add & 0xFFC003FF != 0x91000000:
+            raise ValueError('Expected shop path prefix.')
+        return _swift_string_array(_adrp_add_target(at, adrp, add), image)
 
-    # The first app-ID match is sticker-only; retain the theme and shop matches.
-    delta = 0 if _words(image, address + 120, 2) == (0x2A160268, 0x12000100) else 4
-    before = _words(image, address - 132 - delta, 11)
-    if (
-        before[:4] != (0x528E0C37, 0x72A00E17, 0xD2FC6018, 0xA9026017) or
-        before[5:7] != (0xA9400008, 0xA9030288) or
-        (before[8] != 0xAA1403E0 if delta == 0 else before[8] & 0xFC000000 != 0x94000000) or
-        before[10] != 0xAA0003F6 or
-        _words(image, address - 44 - delta, 6) != (
-            0xA9026017, 0xD1008108, 0xB2410108,
-            0xD2800269, 0xF2FA0009, 0xA9032009,
-        ) or
-        _words(image, address + 84, 4) != (
-            0x528D0E68, 0x72AE0DE8, 0xD2FC8009, 0xA9022408,
-        ) or
-        _words(image, address + 120 + delta, 2) != (0x2A160268, 0x12000100)
-    ):
-        return None
     try:
-        if not (
-            _call_target(image, address - 96 - delta) ==
-            _call_target(image, address - 20) ==
-            _call_target(image, address + 100 + delta)
+        matcher = _call_target(image, address - 4)
+        if (
+            # ['app', <getter>] is built in place for the sticker prefix.
+            _words(image, address - 60, 4) != (0x528E0C28, 0x72A00E08, 0xD2FC6009, 0xA9022408) or
+            _call_target(image, address - 24) != matcher or
+            _words(image, _call_target(image, address - 20), 1) != (0xAA0003E0 | sticker_register,) or
+            _words(image, address - 8, 1) != (0xAA1303E1,) or
+            _words(image, address + 44, 1) != (
+                0x52000000 | sticker_register << 5 | result_register,
+            ) or
+            _words(image, address + 56, 1) != (0xAA1303E1,) or
+            _call_target(image, address + 60) != matcher or
+            _words(image, address + 64, 2) != (0x2A000008 | result_register << 16, 0x12000100) or
+            array_at(address - 16) != ['app', THEME_LIFF_ID] or
+            array_at(address + 48) != ['shop']
         ):
             return None
-        getter = _call_target(image, address - 116 - delta)
-        if _words(image, getter + 8, 1) != (0xD65F03C0,):
+        getter = _call_target(image, address - 44)
+        adrp, add, ret = _words(image, getter, 3)
+        if ret != 0xD65F03C0 or adrp & 0x9F00001F != 0x90000000 or add & 0xFFC003FF != 0x91000000:
             return None
-        string_address = page_address(getter, 0)
-        length, raw = struct.unpack(
-            '<QQ', _bounded(executable, image.file_offset(string_address), 16, 'sticker LIFF ID'),
-        )
-        sticker_id = _cstring(_decode_image_pointer(raw, image) + 32, image)
-        theme_id = _cstring(page_address(address - 52 - delta, 8), image)
-        if length != 0xD000000000000013 or sticker_id != '1359301715-JKd7Y7j1' or theme_id != '1359301715-lw9jxjqV':
-            return None
-    except ValueError:
+        sticker_id = _swift_string(*struct.unpack('<QQ', _bounded(
+            executable, image.file_offset(_adrp_add_target(getter, adrp, add)), 16, 'sticker LIFF ID',
+        )), image)
+    except (ValueError, UnicodeDecodeError, struct.error):
+        return None
+    if sticker_id != STICKER_LIFF_ID:
         return None
     return {
         'kind': 'sticker_liff_fallback',
         'scheme': 'LineShopScheme',
         'liff_id': sticker_id,
-        'theme_liff_id': theme_id,
+        'theme_liff_id': THEME_LIFF_ID,
         'matcher_address': hex(start),
         'file_offset': hex(offset),
-        'original_hex': signature[:4].hex(),
+        'original_hex': struct.pack('<I', sticker_guard).hex(),
         'patched_hex': NOP.to_bytes(4, 'little').hex(),
     }
 
 
+COIN_FEATURE = 0x52800060  # mov w0, #3
+COIN_CALLBACK = (
+    0xB24403BD, 0xD10083FF, 0xA9017BFD, 0xF90007F6, 0x910043FD,
+    0xF9400AC8, 0x94000000, 0xD2800000, 0x94000000, 0xAA0003F4,
+    COIN_FEATURE, 0x94000000, 0xF94006C1, 0x12000000, 0xD2800014,
+    0xA9417BFD, 0x9243FBBD, 0x910083FF, 0xD61F0020,
+)
+# The other side effect's resume function is outlined into shared fragments.
+COIN_OUTLINED_CALLBACK = (
+    0xB24403BD, 0xD10083FF, 0xA9017BFD, 0xF90007F6, 0x910043FD,
+    0x94000000, 0x94000000, 0xAA0003F4, COIN_FEATURE, 0x94000000,
+    0x94000000, 0xA9417BFD, 0x14000000,
+)
+
+
+def _coin_metadata_accessor(image, accessor):
+    bounds = _function_bounds(accessor, image)
+    metadata = _words(image, accessor, 8)
+    return (
+        bounds == (accessor, accessor + 32) and
+        metadata[:2] == (0xA9BF7BFD, 0x910003FD) and
+        metadata[2] & 0x9F00001F == 0x90000000 and
+        metadata[3] & 0xFFC003FF == 0x91000000 and
+        metadata[4] & 0xFC000000 == 0x94000000 and
+        metadata[5:] == (0xD2800001, 0xA8C17BFD, 0xD65F03C0)
+    )
+
+
+def _coin_callback(image, call, gate):
+    """Return (callback start, accessor) for an audited coin resume function."""
+    start, end = _function_bounds(call, image)
+    size = end - start
+    if size == 76 and call == start + 44:
+        words = _words(image, start, 19)
+        masked = tuple(
+            word & 0xFC000000 if index in (6, 8, 11) else word
+            for index, word in enumerate(words)
+        )
+        if masked != COIN_CALLBACK:
+            return None
+        return start, _branch_target(start + 32, words[8])
+    if size == 52 and call == start + 36:
+        words = _words(image, start, 13)
+        masked = tuple(
+            word & 0xFC000000 if index in (5, 6, 9, 10, 12) else word
+            for index, word in enumerate(words)
+        )
+        if masked != COIN_OUTLINED_CALLBACK:
+            return None
+        free_task = _call_target(image, start + 20)
+        metadata = _call_target(image, start + 24)
+        result = _call_target(image, start + 40)
+        tail = _branch_target(start + 48, words[12])
+        free_words = _words(image, free_task, 2)
+        metadata_words = _words(image, metadata, 2)
+        if (
+            free_words[0] != 0xF9400AC8 or free_words[1] & 0xFC000000 != 0x14000000 or
+            metadata_words[0] != 0xD2800000 or metadata_words[1] & 0xFC000000 != 0x14000000 or
+            _words(image, result, 4) != (0xF94006C1, 0x12000000, 0xD2800014, 0xD65F03C0) or
+            _words(image, tail, 3) != (0x9243FBBD, 0x910083FF, 0xD61F0020)
+        ):
+            return None
+        return start, _branch_target(metadata + 4, metadata_words[1])
+    return None
+
+
 def _analyze_coin_entry(executable, image, gate):
     text = _bounded(executable, image.text_offset, image.text_size, '__text')
-    original = bytes.fromhex('60008052')
-    matches = []
+    original = struct.pack('<I', COIN_FEATURE)
+    sites = []
     cursor = text.find(original)
-    expected = (
-        0xB24403BD, 0xD10083FF, 0xA9017BFD, 0xF90007F6, 0x910043FD,
-        0xF9400AC0, 0x94000000, 0xD2800000, 0x94000000, 0xAA0003F4,
-        0x52800060, 0x94000000, 0xF94006C1, 0x12000000, 0xD2800014,
-        0xA9417BFD, 0x9243FBBD, 0x910083FF, 0xD61F0020,
-    )
     while cursor >= 0:
-        address = image.text_address + cursor
-        if cursor % 4 == 0 and cursor >= 40 and cursor + 36 <= len(text):
-            start, end = _function_bounds(address, image)
-            words = struct.unpack_from('<19I', text, cursor - 40)
-            masked = tuple(
-                word & 0xFC000000 if index in (6, 8, 11) else word
-                for index, word in enumerate(words)
-            )
+        if cursor % 4 == 0 and cursor + 8 <= len(text):
+            call = image.text_address + cursor + 4
+            instruction, = struct.unpack_from('<I', text, cursor + 4)
             if (
-                start == address - 40 and end == start + 76 and masked == expected and
-                _branch_target(start + 44, words[11]) == gate
+                instruction & 0xFC000000 == 0x94000000 and
+                _branch_target(call, instruction) == gate
             ):
-                accessor = _branch_target(start + 32, words[8])
-                try:
-                    accessor_bounds = _function_bounds(accessor, image)
-                    metadata = struct.unpack(
-                        '<8I', _bounded(executable, image.file_offset(accessor), 32, 'coin metadata accessor'),
-                    )
-                    if (
-                        accessor_bounds == (accessor, accessor + 32) and
-                        metadata[:2] == (0xA9BF7BFD, 0x910003FD) and
-                        metadata[2] & 0x9F00001F == 0x90000000 and
-                        metadata[3] & 0xFFC003FF == 0x91000000 and
-                        metadata[4] & 0xFC000000 == 0x94000000 and
-                        metadata[5:] == (0xD2800001, 0xA8C17BFD, 0xD65F03C0)
-                    ):
-                        matches.append((start, image.text_offset + cursor))
-                except ValueError:
-                    pass
+                sites.append((call, image.text_offset + cursor))
         cursor = text.find(original, cursor + 1)
-    if len(matches) != 1:
+    # Every feature-3 call must be one of the coin side effects' resume
+    # functions; each side effect has its own, but they may be folded into one.
+    if not 1 <= len(sites) <= 2:
         return None
-    callback, offset = matches[0]
-    return {
+    callbacks = []
+    accessors = set()
+    for call, offset in sites:
+        try:
+            callback = _coin_callback(image, call, gate)
+            if callback is None or not _coin_metadata_accessor(image, callback[1]):
+                return None
+        except (ValueError, struct.error):
+            return None
+        accessors.add(callback[1])
+        callbacks.append((callback[0], offset))
+    if len(accessors) != 1:
+        return None
+    callbacks.sort()
+    entries = [
+        {
+            'callback_address': hex(callback),
+            'file_offset': hex(offset),
+            'original_hex': original.hex(),
+            'patched_hex': '00008052',
+        }
+        for callback, offset in callbacks
+    ]
+    result = {
         'kind': 'coin_entry_uses_sticker_feature',
         'side_effects': ['CanUseCoinFeatureSideEffect', 'CanUseLineCoinFeatureSideEffect'],
         'original_feature': 3,
         'enabled_feature': 0,
-        'callback_address': hex(callback),
-        'file_offset': hex(offset),
-        'original_hex': original.hex(),
-        'patched_hex': '00008052',
+        **entries[0],
     }
+    if len(entries) > 1:
+        result['additional_sites'] = entries[1:]
+    return result
+
+
+def _feature_gate_dispatch(executable, image, gate):
+    """Return the gate's jump-table offset and the entry that returns true.
+
+    The gate sets the result to 1 before the 55-way switch; the patch points
+    features 0 and 1 at the case that returns it unchanged.
+    """
+    words = struct.unpack('<20I', _bounded(executable, image.file_offset(gate), 80, 'feature gate'))
+    if (
+        words[6] != 0xF100D81F or
+        words[7] & 0xFF00001F != 0x54000008 or
+        words[8] != 0x52800033 or
+        words[9] & 0x9F00001F != 0x90000008 or
+        words[10] & 0xFFC003FF != 0x91000108 or
+        words[11:15] != (0x10000009, 0xB8A0790A, 0x8B0A0129, 0xD61F0120) or
+        words[15] & 0xFC000000 != 0x94000000 or
+        words[16] != 0xAA0003F4 or
+        words[17] & 0xFC000000 != 0x94000000 or
+        words[18] != 0x12000000 or
+        words[19] & 0xFC000000 != 0x14000000
+    ):
+        return None
+    # w19 holds 1 and the shared return is `and w0, w19, #1`.
+    epilogue = _branch_target(gate + 76, words[19])
+    if (
+        not gate + 80 <= epilogue - 8 < gate + 0x1000 or
+        _words(image, epilogue - 8, 3) != (0x52800013, 0x12000260, 0xA9447BFD)
+    ):
+        return None
+    table = _adrp_add_target(gate + 36, words[9], words[10])
+    true_entry = epilogue - 4 - (gate + 44)
+    table_offset = image.file_offset(table)
+    if (
+        table % 4 or table < gate + 84 or
+        table + 55 * 4 > image.text_address + image.text_size
+    ):
+        return None
+    entries = struct.unpack('<55i', _bounded(executable, table_offset, 55 * 4, 'feature dispatch'))
+    # Feature 0 still takes the default check, and an unpatched feature
+    # already returns through the chosen case.
+    if entries[0] != 0x10 or true_entry not in entries[2:]:
+        return None
+    return table_offset, true_entry
 
 
 def analyze_sticker_shop_executable(executable):
@@ -1482,32 +1635,10 @@ def analyze_sticker_shop_executable(executable):
     if len(calls) != 2:
         return None
     gate = calls[-1]
-    offset = image.file_offset(gate)
-    words = struct.unpack('<21I', _bounded(executable, offset, 84, 'feature gate'))
-    # Keep w0=1 from before the switch and enter the existing return path.
-    # The named sticker-shop side effects pass feature 0 in the audited builds.
-    if (
-        words[6:8] != (0xAA0003E8, 0xF100D81F) or
-        words[8] & 0xFF00001F != 0x54000008 or
-        words[9] != 0x52800020 or
-        words[10] & 0x9F00001F != 0x90000009 or
-        words[11] & 0xFFC003FF != 0x91000129 or
-        words[12:16] != (0x1000000A, 0xB8A8792B, 0x8B0B014A, 0xD61F0140) or
-        words[16] & 0xFC000000 != 0x94000000 or
-        words[17] != 0xAA0003F4 or
-        words[18] & 0xFC000000 != 0x94000000 or
-        words[19] != 0x12000000 or
-        not (words[20] & 0xFC000000 == 0x14000000 or words[20] == 0xA9447BFD)
-    ):
+    dispatch = _feature_gate_dispatch(executable, image, gate)
+    if dispatch is None:
         return None
-    table = _adrp_add_target(gate + 40, words[10], words[11])
-    table_offset = image.file_offset(table)
-    if (
-        table % 4 or table < gate + 84 or
-        table + 55 * 4 > image.text_address + image.text_size or
-        _bounded(executable, table_offset, 4, 'feature dispatch') != b'\x10\0\0\0'
-    ):
-        return None
+    table_offset, true_entry = dispatch
     liff_route = _analyze_sticker_liff_route(executable, image)
     if liff_route is None:
         return None
@@ -1525,7 +1656,7 @@ def analyze_sticker_shop_executable(executable):
         'gate_address': hex(gate),
         'file_offset': hex(table_offset),
         'original_hex': '10000000',
-        'patched_hex': '20000000',
+        'patched_hex': struct.pack('<i', true_entry).hex(),
         'liff_route': liff_route,
         'native_routes': native_routes,
         'coin_entry': coin_entry,
@@ -1539,10 +1670,14 @@ def analyze_theme_shop_executable(executable):
         return None
     entry_offset = int(shop['file_offset'], 16) + 4
     liff_offset = int(shop['liff_route']['file_offset'], 16) + 4
-    # The validated LIFF signature holds both app-ID guards; the second is the theme one.
+    sticker_guard = int.from_bytes(bytes.fromhex(shop['liff_route']['original_hex']), 'little')
+    theme_guard, = struct.unpack('<I', _bounded(executable, liff_offset, 4, 'theme LIFF guard'))
+    # The validated LIFF matcher holds both app-ID guards right after each
+    # other; the second is the theme one and joins the sticker guard's target.
     if (
         _bounded(executable, entry_offset, 4, 'theme feature dispatch') != b'\x10\0\0\0' or
-        _bounded(executable, liff_offset, 4, 'theme LIFF guard') != bytes.fromhex('77000037')
+        theme_guard & 0xFFF80000 != 0x37000000 or
+        (theme_guard >> 5) & 0x3FFF != ((sticker_guard >> 5) & 0x3FFF) - 1
     ):
         return None
     native = shop['native_routes']
@@ -1556,13 +1691,13 @@ def analyze_theme_shop_executable(executable):
         'kind_case': 2,
         'file_offset': hex(entry_offset),
         'original_hex': '10000000',
-        'patched_hex': '20000000',
+        'patched_hex': shop['patched_hex'],
         'liff_route': {
             'kind': 'theme_liff_fallback',
             'scheme': shop['liff_route']['scheme'],
             'liff_id': shop['liff_route']['theme_liff_id'],
             'file_offset': hex(liff_offset),
-            'original_hex': '77000037',
+            'original_hex': struct.pack('<I', theme_guard).hex(),
             'patched_hex': NOP.to_bytes(4, 'little').hex(),
         },
         # Replaces the sticker-only code in the one shared cave; never applied with it.

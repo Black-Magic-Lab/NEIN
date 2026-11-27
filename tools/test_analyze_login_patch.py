@@ -93,49 +93,64 @@ class LoginPatchAnalyzerTests(unittest.TestCase):
         self.assertEqual(patch['original_hex'], '40000036')
         self.assertEqual(patch['patched_hex'], '1f2003d5')
 
-    def test_lower_login_score_applies_only_to_26_18_build(self):
+    def test_reference_window_tolerates_one_moved_load(self):
+        # A moved GOT load still matches; a different frame layout as well does not.
         binary = bytearray(sample_macho(reference=True))
-        struct.pack_into('<5I', binary, 200, *([analyzer.NOP] * 5))
-        for build, expected in (('2026.1109.1536', '0xf8'), ('other', None)):
-            with self.subTest(build=build):
-                result = analyzer.analyze_login_executable(binary, '26.18.0', build)
-                self.assertAlmostEqual(result['best_similarity'], 24 / 29)
-                self.assertEqual(result['recommended_patch_offset'], expected)
-                self.assertEqual(result['high_confidence_candidate_count'], int(expected is not None))
+        struct.pack_into('<I', binary, 200 + 25 * 4, 0xF946FD08)
+        result = analyzer.analyze_login_executable(bytes(binary))
+        self.assertAlmostEqual(result['best_similarity'], 28 / 29)
+        self.assertEqual(result['recommended_patch_offset'], '0xf8')
+        struct.pack_into('<4I', binary, 200, 0xA90457F6, 0xA9054FF4, 0xA9067BFD, 0x910183FD)
+        result = analyzer.analyze_login_executable(bytes(binary))
+        self.assertAlmostEqual(result['best_similarity'], 24 / 29)
+        self.assertIsNone(result['recommended_patch_offset'])
+
+    def inline_friend_pattern(self, register=26):
+        compare = 0x7100141F | register << 5
+        store = analyzer.FRIEND_TAB_INLINE_STORE
+        return (
+            compare, 0x1A9F17E8, *store, 0x94000000, 0x14000000,
+            compare, 0x1A9F17E8, *([analyzer.NOP] * 9), *store,
+        )
 
     def test_analyzes_unique_friend_tab_patch_sites(self):
         binary = bytearray(sample_macho())
-        pattern = (
-            0x7100173F, 0x1A9F17E8, 0x94000000,
-            0x14000000, 0x7100173F, 0x1A9F17E8,
-        )
-        struct.pack_into('<6I', binary, 200 + 20 * 4, *pattern)
+        struct.pack_into('<19I', binary, 200 + 20 * 4, *self.inline_friend_pattern())
 
         profile = analyzer.analyze_friend_tab_executable(bytes(binary))
 
         self.assertEqual(
             [patch['file_offset'] for patch in profile['patches']],
-            ['0x11c', '0x12c'],
+            ['0x11c', '0x134'],
         )
-        analyzer._validate_home_friends_section(
-            {'home_friends': profile}, bytes(binary),
-        )
+        patched = bytearray(binary)
+        for patch in profile['patches']:
+            offset = int(patch['file_offset'], 16)
+            self.assertEqual(patched[offset:offset + 4].hex(), patch['original_hex'])
+            patched[offset:offset + 4] = bytes.fromhex(patch['patched_hex'])
+        self.assertEqual(struct.unpack_from('<I', patched, 0x11c)[0], analyzer.FRIEND_TAB_CASE_COLLAPSED)
+        analyzer._validate_home_friends_section({'home_friends': profile}, bytes(binary))
         altered = dict(profile)
         altered['patches'] = [dict(patch) for patch in profile['patches']]
         altered['patches'][0]['file_offset'] = '0x120'
         with self.assertRaisesRegex(ValueError, 'Friends'):
-            analyzer._validate_home_friends_section(
-                {'home_friends': altered}, bytes(binary),
-            )
+            analyzer._validate_home_friends_section({'home_friends': altered}, bytes(binary))
+
+    def test_friend_tab_analysis_needs_both_stores_and_one_compare(self):
+        pattern = self.inline_friend_pattern()
+        for index, value in ((2, analyzer.NOP), (17, analyzer.NOP), (6, 0x7100141F | 25 << 5),
+                             (0, 0x7100181F | 26 << 5)):
+            binary = bytearray(sample_macho())
+            altered = list(pattern)
+            altered[index] = value
+            struct.pack_into('<19I', binary, 200 + 20 * 4, *altered)
+            with self.subTest(index=index):
+                self.assertIsNone(analyzer.analyze_friend_tab_executable(bytes(binary)))
 
     def test_friend_tab_analysis_refuses_non_unique_signature(self):
         binary = bytearray(sample_macho())
-        pattern = (
-            0x7100173F, 0x1A9F17E8, 0x94000000,
-            0x14000000, 0x7100173F, 0x1A9F17E8,
-        )
-        struct.pack_into('<6I', binary, 200 + 20 * 4, *pattern)
-        struct.pack_into('<6I', binary, 200 + 32 * 4, *pattern)
+        struct.pack_into('<19I', binary, 200 + 20 * 4, *self.inline_friend_pattern())
+        struct.pack_into('<19I', binary, 200 + 40 * 4, *self.inline_friend_pattern())
 
         self.assertIsNone(analyzer.analyze_friend_tab_executable(bytes(binary)))
 

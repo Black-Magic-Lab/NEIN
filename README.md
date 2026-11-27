@@ -10,7 +10,7 @@ NEIN 會修改 LINE 的 IPA，讓 iPhone 以副裝置身分登入，並可選擇
 
 ## 支援版本 📦
 
-LINE 26.14.0、26.15.1、26.17.0，需要 iOS 18 以上。只接受已核對的 IPA，其他版本會拒絕處理。
+LINE 26.19.0，需要 iOS 18 以上。只接受已核對的 IPA，其他版本會拒絕處理。
 
 macOS 版請看 [README-macOS.md](README-macOS.md)。
 
@@ -21,8 +21,8 @@ macOS 版請看 [README-macOS.md](README-macOS.md)。
 
    ```sh
    python3 tools/main.py --keychain-compat --remove-ads --collapse-friends-on-launch \
-     jp.naver.line_26.17.0.ipa \
-     output/NEIN-26.17.0.ipa
+     jp.naver.line_26.19.0.ipa \
+     output/NEIN-26.19.0.ipa
    ```
 
 3. 用自己的憑證完整重簽後安裝，例如 [AltStore](https://altstore.io/) 或 [Sideloadly](https://sideloadly.io/)。重簽時請保留 Bundle ID `kinta.ma.nein`。
@@ -41,7 +41,7 @@ macOS 版請看 [README-macOS.md](README-macOS.md)。
 | `--skin-theme` | 把白色主題替換成指定的主題：格式 `TARGET_UUID=SOURCE_UUID`，套用中與系統退回預設的兩種狀態都渲染指定主題的外觀。 |
 | `--primary-login` | 保留主手機的登入流程，不偽裝成 iPad。 |
 
-貼圖商店與主題小舖預設開啟，不用加參數：貼圖可以用在原版 LINE 儲值的代幣購買（26.17.0 已實測），主題小舖已實測可開啟瀏覽、免費主題能下載並套用（付費主題購買未測），兩者在 NEIN 內都無法儲值。若某個 IPA 推不出已稽核的小舖 patch，建置會自動略過並記在 manifest 的 `shops_skipped`。
+貼圖商店與主題小舖預設開啟，不用加參數：貼圖可以用在原版 LINE 儲值的代幣購買（曾於 26.17.0 實測），主題小舖已實測可開啟瀏覽、免費主題能下載並套用（付費主題購買未測），兩者在 NEIN 內都無法儲值。若某個 IPA 推不出已稽核的小舖 patch，建置會自動略過並記在 manifest 的 `shops_skipped`。
 
 廣告網域清單可以用 `python3 tools/scan_ad_domains.py <IPA> ad_domains.txt` 重新產生。
 
@@ -57,6 +57,7 @@ macOS 版請看 [README-macOS.md](README-macOS.md)。
 - NEIN 不接收 LINE 連結，連結會由原版 LINE 開啟。
 - `--remove-ads` 可能讓 LINE News、推薦內容或廣告影片無法載入。
 - iPhone Duo 支援（實驗性）現在起變成預設內建，如在其他手機有版面問題請回報。
+- LINE 26.19.0 原版已支援 iPhone Duo 的螢幕尺寸與相機，但還不支援 iPhone Duo 的側邊按鈕（系統直向選單）與展開後的雙欄版面，NEIN 仍會補上。
 - 請先備份 LINE 資料，再於測試裝置安裝。
 
 ## 致謝 🙏

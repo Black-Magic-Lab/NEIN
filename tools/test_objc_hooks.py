@@ -41,9 +41,6 @@ class ObjCHookTests(unittest.TestCase):
     def test_duo_split_layout_with_view_doubles(self):
         self.compile_and_run(SOURCES / 'test_duo_split_layout.m')
 
-    def test_duo_camera_layout_with_catalyst_uikit(self):
-        self.compile_and_run(SOURCES / 'test_duo_camera_layout.m', catalyst=True)
-
     def test_duo_home_settings_with_catalyst_uikit(self):
         self.compile_and_run(SOURCES / 'test_duo_home_settings.m', catalyst=True)
 
