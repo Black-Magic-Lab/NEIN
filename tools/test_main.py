@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+import zlib
 from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
@@ -14,6 +15,26 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import main  # noqa: E402
 from test_analyze_login_patch import sample_macho  # noqa: E402
+
+
+def sample_png(width, height):
+    """An RGBA PNG whose left half is transparent."""
+    def chunk(kind, data):
+        return (struct.pack('>I', len(data)) + kind + data +
+                struct.pack('>I', zlib.crc32(kind + data) & 0xFFFFFFFF))
+    row = b''.join(
+        b'\x00\x00\x00\x00' if x < width // 2 else b'\xff\x00\x00\xff'
+        for x in range(width)
+    )
+    pixels = b''.join(b'\x00' + row for _ in range(height))
+    return (b'\x89PNG\r\n\x1a\n' +
+            chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)) +
+            chunk(b'IDAT', zlib.compress(pixels)) + chunk(b'IEND', b''))
+
+
+def png_header(data):
+    width, height, depth, color = struct.unpack('>IIBB', data[16:26])
+    return width, height, depth, color
 
 
 class MainToolTests(unittest.TestCase):
@@ -489,6 +510,117 @@ class MainToolTests(unittest.TestCase):
         with mock.patch.object(main.sys, 'platform', 'darwin'):
             with self.assertRaisesRegex(ValueError, 'main Assets.car'):
                 main.extract_icon_previews(self.source, ['basic_default'])
+
+    def test_custom_name_and_icon_replace_the_primary_icon(self):
+        source = self.sample_info()
+        output = plistlib.loads(main.patched_info_plist(
+            source, enable_icon_picker=True, app_name='我的LINE', custom_icon=True,
+        ))
+        self.assertEqual(output['CFBundleDisplayName'], '我的LINE')
+        self.assertEqual(output['CFBundleName'], '我的LINE')
+        for key, files in main.CUSTOM_ICON_FILES.items():
+            icons = output[key]
+            # Without CFBundleIconName iOS uses the loose PNGs.
+            self.assertEqual(icons['CFBundlePrimaryIcon'], {'CFBundleIconFiles': files})
+            self.assertEqual(set(icons['CFBundleAlternateIcons']),
+                             {'basic_default', 'design_deep_blue', 'design_simple_banana'})
+        config = output['NEINIconPicker']
+        self.assertEqual(config['PrimaryIcon'], 'nein_custom')
+        self.assertEqual(config['OriginalPrimaryIcon'], 'basic_default')
+        self.assertEqual(config['AllowedIconNames'],
+                         ['nein_custom', 'basic_default', 'design_deep_blue', 'design_simple_banana'])
+        # The default banana icon is not required once a custom icon is used.
+        source['CFBundleIcons']['CFBundleAlternateIcons'].pop(main.DEFAULT_ICON)
+        main.patched_info_plist(source, enable_icon_picker=True, custom_icon=True)
+
+    def test_custom_icon_name_must_not_collide_with_line_icons(self):
+        source = self.sample_info()
+        source['CFBundleIcons']['CFBundleAlternateIcons']['nein_custom'] = {
+            'CFBundleIconName': 'nein_custom'}
+        with self.assertRaisesRegex(ValueError, 'already defines'):
+            main.patched_info_plist(source, enable_icon_picker=True, custom_icon=True)
+
+    def test_app_name_and_icon_arguments(self):
+        self.assertEqual(self.args().app_name, 'NEIN')
+        self.assertIsNone(self.args().app_icon)
+        self.assertEqual(self.args('--app-name', '  我的LINE ').app_name, '我的LINE')
+        icon = self.directory / 'icon.jpeg'
+        icon.write_bytes(b'jpeg')
+        self.assertEqual(self.args('--app-icon', str(icon)).app_icon, icon)
+        for flags in (('--app-name', ''), ('--app-name', 'two\nlines'),
+                      ('--app-icon', str(self.directory / 'missing.png')),
+                      ('--entry-only', '--app-icon', str(icon))):
+            with self.subTest(flags=flags), redirect_stderr(StringIO()), \
+                    self.assertRaises(SystemExit):
+                self.args(*flags)
+
+    def test_custom_icon_preview_is_listed_first(self):
+        previews = {
+            main.ICON_PREVIEW_ROOT + 'manifest.json': json.dumps({
+                'schemaVersion': 1,
+                'icons': [{'name': 'basic_default', 'file': 'basic_default.png',
+                           'category': 'LINE 基本圖示'}],
+            }).encode(),
+            main.ICON_PREVIEW_ROOT + 'basic_default.png': b'png',
+        }
+        custom = {main.ICON_PREVIEW_ROOT + 'nein_custom.png': b'preview',
+                  main.APP_ROOT + 'NEINCustomIcon60x60@2x.png': b'icon'}
+        result = main.add_custom_icon_preview(previews, custom)
+        manifest = json.loads(result[main.ICON_PREVIEW_ROOT + 'manifest.json'])
+        self.assertEqual([entry['name'] for entry in manifest['icons']],
+                         ['nein_custom', 'basic_default'])
+        self.assertEqual(manifest['icons'][0]['category'], '自訂圖示')
+        self.assertEqual(result[main.APP_ROOT + 'NEINCustomIcon60x60@2x.png'], b'icon')
+        self.assertEqual(result[main.ICON_PREVIEW_ROOT + 'basic_default.png'], b'png')
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'needs macOS ImageIO')
+    def test_render_custom_icon_crops_to_opaque_squares(self):
+        image = self.directory / 'wide.png'
+        image.write_bytes(sample_png(300, 200))
+        files = main.render_custom_icon(image)
+        expected = {main.APP_ROOT + name: size for name, size in main.CUSTOM_ICON_SIZES.items()}
+        expected[main.ICON_PREVIEW_ROOT + 'nein_custom.png'] = 144
+        self.assertEqual(set(files), set(expected))
+        for name, size in expected.items():
+            with self.subTest(name=name):
+                # 8-bit RGB without alpha: transparent pixels became white.
+                self.assertEqual(png_header(files[name]), (size, size, 8, 2))
+        image.write_bytes(sample_png(120, 120))
+        with self.assertRaisesRegex(ValueError, 'at least 180 pixels'):
+            main.render_custom_icon(image)
+
+    def test_custom_icon_build_ships_loose_icons_and_records_manifest(self):
+        info = self.sample_info()
+        original = self.build_version_binary()
+        profile = self.profile(original, patch_offset=0x400, patch_va=0x100000400,
+                               instruction='tbz w0, #0, 0x100000408')
+        self.write_ipa(original, info)
+        icon = self.directory / 'my_icon.jpeg'
+        icon.write_bytes(b'jpeg source')
+        args = self.args('--app-name', '我的LINE', '--app-icon', str(icon))
+        previews = {
+            main.ICON_PREVIEW_ROOT + 'manifest.json': json.dumps({'schemaVersion': 1, 'icons': []}).encode(),
+        }
+        custom = {main.APP_ROOT + name: b'icon' for name in main.CUSTOM_ICON_SIZES}
+        custom[main.ICON_PREVIEW_ROOT + 'nein_custom.png'] = b'preview'
+        manifest = self.run_main(
+            args, profile, build_compat_dylib=mock.Mock(return_value=(None, b'dylib')),
+            extract_icon_previews=mock.Mock(return_value=previews),
+            render_custom_icon=mock.Mock(return_value=custom),
+        )
+        with zipfile.ZipFile(args.output) as archive:
+            output_info = plistlib.loads(archive.read(main.PLIST))
+            for name in custom:
+                self.assertIn(name, archive.namelist())
+            picker = json.loads(archive.read(main.ICON_PREVIEW_ROOT + 'manifest.json'))
+        self.assertEqual(output_info['CFBundleDisplayName'], '我的LINE')
+        self.assertEqual(picker['icons'][0]['name'], 'nein_custom')
+        self.assertEqual((manifest['app_name'], manifest['app_icon'], manifest['icon_count']),
+                         ('我的LINE', 'nein_custom', 4))
+        self.assertEqual(manifest['custom_app_icon']['source_file'], 'my_icon.jpeg')
+        self.assertEqual(manifest['custom_app_icon']['source_sha256'],
+                         hashlib.sha256(b'jpeg source').hexdigest())
+        self.assertEqual(len(manifest['custom_app_icon']['files']), 4)
 
     def test_output_info_plist_requires_default_icon(self):
         source = self.sample_info()

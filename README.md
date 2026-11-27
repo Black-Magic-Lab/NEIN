@@ -27,7 +27,7 @@ macOS 版請看 [README-macOS.md](README-macOS.md)。
 
 3. 用自己的憑證完整重簽後安裝，例如 [AltStore](https://altstore.io/) 或 [Sideloadly](https://sideloadly.io/)。重簽時請保留 Bundle ID `kinta.ma.nein`。
 
-裝好的 App 叫 `NEIN`，可以和原版 LINE 並存。NEIN 收不到推播，建議保留原版 LINE 接收通知，平常用 NEIN。
+裝好的 App 預設叫 `NEIN`（可用 `--app-name`、`--app-icon` 自訂），可以和原版 LINE 並存。NEIN 收不到推播，建議保留原版 LINE 接收通知，平常用 NEIN。
 
 預設以副裝置（偽裝成 iPad）登入。建議先用副裝置測試；若要用主帳號，請先備份所有資料。
 
@@ -40,6 +40,19 @@ macOS 版請看 [README-macOS.md](README-macOS.md)。
 | `--collapse-friends-on-launch` | 首頁的好友區塊預設收合，仍可手動展開。 |
 | `--skin-theme` | 把白色主題替換成指定的主題：格式 `TARGET_UUID=SOURCE_UUID`，套用中與系統退回預設的兩種狀態都渲染指定主題的外觀。 |
 | `--primary-login` | 保留主手機的登入流程，不偽裝成 iPad。 |
+| `--app-name 名稱` | 自訂主畫面上的 App 名稱，預設 `NEIN`。 |
+| `--app-icon 圖檔` | 用自己的圖片當 App 圖示（PNG、JPEG、HEIC 等皆可）：置中裁成正方形，透明處補白，短邊至少 180 像素，建議 1024 像素。LINE 原本的圖示仍可在 App 內的圖示切換器換回。不能和 `--entry-only` 一起用。 |
+
+例如自訂名稱與圖示：
+
+```sh
+python3 tools/main.py --keychain-compat --remove-ads --collapse-friends-on-launch \
+  --app-name 我的LINE --app-icon my_icon.png \
+  jp.naver.line_26.19.0.ipa \
+  output/MyLINE-26.19.0.ipa
+```
+
+自訂名稱與圖示不會改變 Bundle ID，所以不同名稱的版本仍是同一個 App，無法同時安裝。
 
 貼圖商店與主題小舖預設開啟，不用加參數：貼圖可以用在原版 LINE 儲值的代幣購買（曾於 26.17.0 實測），主題小舖已實測可開啟瀏覽、免費主題能下載並套用（付費主題購買未測），兩者在 NEIN 內都無法儲值。若某個 IPA 推不出已稽核的小舖 patch，建置會自動略過並記在 manifest 的 `shops_skipped`。
 

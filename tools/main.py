@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import unicodedata
 import urllib.error
 import urllib.request
 import zipfile
@@ -48,6 +49,22 @@ REMOVED_ARCHIVE_PREFIXES = (
 DEFAULT_BUNDLE_ID = 'kinta.ma.nein'
 DEFAULT_APP_NAME = 'NEIN'
 DEFAULT_ICON = 'design_simple_banana'
+# --app-icon ships loose PNGs as the primary icon; LINE's own icons stay in
+# Assets.car and remain selectable from the in-app icon picker.
+CUSTOM_ICON_NAME = 'nein_custom'
+CUSTOM_ICON_CATEGORY = '自訂圖示'
+CUSTOM_ICON_FILES = {
+    'CFBundleIcons': ['NEINCustomIcon60x60'],
+    'CFBundleIcons~ipad': ['NEINCustomIcon60x60', 'NEINCustomIcon76x76', 'NEINCustomIcon83.5x83.5'],
+}
+CUSTOM_ICON_SIZES = {
+    'NEINCustomIcon60x60@2x.png': 120,
+    'NEINCustomIcon60x60@3x.png': 180,
+    'NEINCustomIcon76x76@2x~ipad.png': 152,
+    'NEINCustomIcon83.5x83.5@2x~ipad.png': 167,
+}
+CUSTOM_ICON_PREVIEW = CUSTOM_ICON_NAME + '.png'
+CUSTOM_ICON_PREVIEW_SIZE = 144
 AD_DOMAIN_LIST = ROOT / 'ad_domains.txt'
 LC_BUILD_VERSION = 0x32
 PLATFORM_IOS = 2
@@ -198,31 +215,39 @@ def iphone_duo_info_plist_changes(info):
             'DTPlatformVersion': '%d.%d' % IPHONE_DUO_SDK[:2]}
 
 
-def patched_info_plist(info, enable_icon_picker=False, iphone_duo=False):
+def patched_info_plist(info, enable_icon_picker=False, iphone_duo=False,
+                       app_name=DEFAULT_APP_NAME, custom_icon=False):
     result = dict(info)
     result['CFBundleIdentifier'] = DEFAULT_BUNDLE_ID
-    result['CFBundleDisplayName'] = DEFAULT_APP_NAME
-    result['CFBundleName'] = DEFAULT_APP_NAME
+    result['CFBundleDisplayName'] = app_name
+    result['CFBundleName'] = app_name
     for key in tuple(result):
         if key.startswith('CFBundleURLTypes'):
             del result[key]
     original_primary_name, icon_names = app_icon_names(info)
-    if DEFAULT_ICON not in icon_names:
+    if not custom_icon and DEFAULT_ICON not in icon_names:
         raise ValueError(f'Default app icon is unavailable: {DEFAULT_ICON}')
+    if custom_icon and CUSTOM_ICON_NAME in icon_names:
+        raise ValueError(f'LINE already defines an icon named {CUSTOM_ICON_NAME}.')
+    primary_name = CUSTOM_ICON_NAME if custom_icon else DEFAULT_ICON
 
     for key in ('CFBundleIcons', 'CFBundleIcons~ipad'):
         icon_config = dict(info[key])
         primary_icon = icon_config['CFBundlePrimaryIcon']
         alternates = dict(icon_config['CFBundleAlternateIcons'])
-        selected_icon = alternates.get(
-            DEFAULT_ICON,
-            primary_icon if DEFAULT_ICON == original_primary_name else None,
-        )
+        if custom_icon:
+            # No CFBundleIconName: iOS then uses the loose PNGs, not Assets.car.
+            selected_icon = {'CFBundleIconFiles': list(CUSTOM_ICON_FILES[key])}
+        else:
+            selected_icon = alternates.get(
+                DEFAULT_ICON,
+                primary_icon if DEFAULT_ICON == original_primary_name else None,
+            )
         if not selected_icon:
             raise ValueError(f'Default app icon is unavailable: {DEFAULT_ICON}')
-        alternates.pop(DEFAULT_ICON, None)
+        alternates.pop(primary_name, None)
         if enable_icon_picker:
-            if DEFAULT_ICON != original_primary_name:
+            if primary_name != original_primary_name:
                 alternates[original_primary_name] = dict(primary_icon)
         icon_config['CFBundleAlternateIcons'] = alternates
         icon_config['CFBundlePrimaryIcon'] = dict(selected_icon)
@@ -231,9 +256,9 @@ def patched_info_plist(info, enable_icon_picker=False, iphone_duo=False):
     if enable_icon_picker:
         result[ICON_PICKER_KEY] = {
             'Enabled': True,
-            'PrimaryIcon': DEFAULT_ICON,
+            'PrimaryIcon': primary_name,
             'OriginalPrimaryIcon': original_primary_name,
-            'AllowedIconNames': icon_names,
+            'AllowedIconNames': [CUSTOM_ICON_NAME, *icon_names] if custom_icon else icon_names,
             'PreviewManifest': ICON_PREVIEW_MANIFEST,
         }
     if iphone_duo:
@@ -271,6 +296,55 @@ def extract_icon_previews(ipa_path, icon_names):
         ], check=True)
 
         return collect_icon_preview_assets(output_path, icon_names)
+
+
+def render_custom_icon(image_path):
+    """Return the loose icon PNGs and the picker preview made from image_path."""
+    if sys.platform != 'darwin':
+        raise ValueError('Rendering a custom app icon requires macOS ImageIO.')
+    sizes = {**CUSTOM_ICON_SIZES, CUSTOM_ICON_PREVIEW: CUSTOM_ICON_PREVIEW_SIZE}
+    with tempfile.TemporaryDirectory(prefix='nein-app-icon-') as directory:
+        temporary = Path(directory)
+        helper_path = temporary / 'render_app_icon'
+        output_path = temporary / 'icons'
+        output_path.mkdir()
+        subprocess.run([
+            'xcrun', '--sdk', 'macosx', 'clang', '-fobjc-arc',
+            '-framework', 'Foundation', '-framework', 'CoreGraphics',
+            '-framework', 'ImageIO', '-framework', 'UniformTypeIdentifiers',
+            str(ROOT / 'tools' / 'render_app_icon.m'),
+            '-o', str(helper_path),
+        ], check=True)
+        result = subprocess.run(
+            [str(helper_path), str(image_path), str(output_path),
+             *(f'{name}={size}' for name, size in sizes.items())],
+            capture_output=True, text=True,
+        )
+        if result.returncode:
+            raise ValueError(result.stderr.strip() or 'Could not render the custom app icon.')
+        files = {}
+        for name in sizes:
+            data = (output_path / name).read_bytes()
+            if not data.startswith(b'\x89PNG\r\n\x1a\n'):
+                raise ValueError(f'Rendered app icon is not a PNG: {name}.')
+            root = ICON_PREVIEW_ROOT if name == CUSTOM_ICON_PREVIEW else APP_ROOT
+            files[root + name] = data
+        return files
+
+
+def add_custom_icon_preview(previews, custom_files):
+    """List the custom icon first in the picker's preview manifest."""
+    manifest_name = ICON_PREVIEW_ROOT + 'manifest.json'
+    manifest = json.loads(previews[manifest_name])
+    manifest['icons'] = [
+        {'name': CUSTOM_ICON_NAME, 'file': CUSTOM_ICON_PREVIEW, 'category': CUSTOM_ICON_CATEGORY},
+        *manifest['icons'],
+    ]
+    return {
+        **previews,
+        manifest_name: json.dumps(manifest, ensure_ascii=False, indent=2).encode('utf-8'),
+        **custom_files,
+    }
 
 
 def find_profile(info, original, allow_unverified=False):
@@ -351,6 +425,13 @@ def patch_build_version_sdk(data):
     }
 
 
+def app_name_argument(value):
+    name = value.strip()
+    if not name or any(unicodedata.category(char) in ('Cc', 'Cf', 'Zl', 'Zp') for char in name):
+        raise argparse.ArgumentTypeError('expected a non-empty, single-line name')
+    return name
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('input', type=Path, help='Original verified IPA, not a previously patched IPA')
@@ -369,6 +450,11 @@ def parse_args(argv=None):
                         help='Initialize the Friends section as collapsed')
     parser.add_argument('--skin-theme', metavar='TARGET_UUID=SOURCE_UUID',
                         help='Give the target owned theme (e.g. the white theme) the look of the source theme, both while applied and after the system reverts to the default')
+    parser.add_argument('--app-name', type=app_name_argument, default=DEFAULT_APP_NAME,
+                        help=f'Home screen name of the patched app (default: {DEFAULT_APP_NAME})')
+    parser.add_argument('--app-icon', type=Path, metavar='IMAGE',
+                        help='Use this picture (PNG, JPEG, HEIC...) as the app icon; it is center-cropped '
+                             'to a square and LINE\'s icons stay selectable in the icon picker')
     parser.add_argument('--allow-unverified', action='store_true',
                         help='Allow a different executable hash for a known version/build; still checks the original ARM64 instruction')
     args = parser.parse_args(argv)
@@ -390,6 +476,10 @@ def parse_args(argv=None):
         parser.error('--entry-only cannot be combined with --primary-login.')
     if args.entry_only and args.skin_theme:
         parser.error('--entry-only cannot be combined with --skin-theme.')
+    if args.app_icon and args.entry_only:
+        parser.error('--entry-only cannot be combined with --app-icon.')
+    if args.app_icon and not args.app_icon.is_file():
+        parser.error(f'--app-icon {str(args.app_icon)!r} is not a file.')
     if args.skin_theme:
         parts = args.skin_theme.split('=')
         if len(parts) != 2 or not all(UUID_PATTERN.match(p) for p in parts):
@@ -430,12 +520,16 @@ def main():
                 patch_sites += [theme, theme['liff_route']]
         output_info = patched_info_plist(
             info, enable_icon_picker=not args.entry_only, iphone_duo=args.iphone_duo,
+            app_name=args.app_name, custom_icon=bool(args.app_icon),
         )
         icon_names = app_icon_names(info)[1]
         domains = load_ad_domains() if args.remove_ads else None
-        added_members = [] if args.entry_only else [
-            (name, content, 0o100644)
-            for name, content in extract_icon_previews(args.input, icon_names).items()
+        icon_files = {} if args.entry_only else extract_icon_previews(args.input, icon_names)
+        custom_icon_files = render_custom_icon(args.app_icon) if args.app_icon else {}
+        if custom_icon_files:
+            icon_files = add_custom_icon_preview(icon_files, custom_icon_files)
+        added_members = [
+            (name, content, 0o100644) for name, content in icon_files.items()
         ]
         build, lib_data = (
             (None, None) if args.entry_only
@@ -550,10 +644,10 @@ def main():
                 'executable_hash_verified': original_sha256 == profile.executable_sha256,
                 'source_bundle_identifier': info['CFBundleIdentifier'],
                 'bundle_identifier': DEFAULT_BUNDLE_ID,
-                'app_name': DEFAULT_APP_NAME,
-                'app_icon': DEFAULT_ICON,
+                'app_name': args.app_name,
+                'app_icon': CUSTOM_ICON_NAME if args.app_icon else DEFAULT_ICON,
                 'icon_picker_enabled': not args.entry_only,
-                'icon_count': 0 if args.entry_only else len(icon_names),
+                'icon_count': 0 if args.entry_only else len(icon_names) + bool(args.app_icon),
                 'url_schemes_removed': True,
                 'source_signing_and_store_metadata_removed': True,
                 'remove_ads': args.remove_ads,
@@ -578,6 +672,13 @@ def main():
                                 'signature removed; dylib and icons added; ZIP and dylib checks passed.'}
     if args.collapse_friends_on_launch:
         manifest['home_friends'] = profile.home_friends
+    if args.app_icon:
+        manifest['custom_app_icon'] = {
+            'source_file': args.app_icon.name,
+            'source_sha256': hashlib.sha256(args.app_icon.read_bytes()).hexdigest(),
+            'crop': 'centered square, flattened onto white',
+            'files': sorted(name for name in custom_icon_files if name.startswith(APP_ROOT + 'NEINCustomIcon')),
+        }
     if not shop:
         manifest['shops_skipped'] = (
             'Executable not audited; shop patches skipped.'
